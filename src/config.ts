@@ -1,165 +1,157 @@
+import path from "path";
 import * as fs from "fs";
-import * as path from "path";
 import * as dotenv from "dotenv";
 import chalk from "chalk";
 
-// Default configuration
-export interface Config {
-	provider: "ollama" | "openai" | "groq" | "bedrock";
-	model: string;
-	baseUrl?: string;
-	apiKey?: string;
-	region?: string; // AWS region for Bedrock
-	systemPrompt: string;
-	temperature: number;
-	maxTokens: number;
-	interval: number;
-	outputFile: string;
+// Load environment variables
+dotenv.config({ path: ".env.context" });
+// Fallback to example config if no .env file exists
+if (!fs.existsSync(".env.context")) {
+	dotenv.config({ path: ".env.context.example" });
 }
 
 // Default configuration values
-export const DEFAULT_CONFIG: Config = {
-	provider: "ollama",
-	model: "llama3",
-	baseUrl: "http://localhost:11434",
-	systemPrompt: `You are an AI assistant that analyzes code repositories and generates helpful documentation.
-Given the context of a project (files, structure, etc.), you will create a comprehensive Markdown document 
-that includes:
-1. An overview of the project
-2. The project structure
-3. Key components and how they interact
-4. Important files and their purpose
-5. Dependencies
-6. Setup and installation instructions (if applicable)
-7. Usage examples (if applicable)
-8. Development patterns and architectural decisions
-9. Recommendations for improvements or best practices
+const CONFIG = {
+	// Output path for documentation
+	outputPath: process.env.OUTPUT_PATH || "project-doc",
 
-Be concise but informative. Format your output in a structured, well-organized Markdown document.`,
-	temperature: 0.7,
-	maxTokens: 4000,
-	interval: 5000,
-	outputFile: "project-context.md",
+	// Update frequency in milliseconds
+	updateInterval: parseInt(process.env.UPDATE_INTERVAL || "5000", 10),
+
+	// LLM provider (ollama or openai)
+	llmProvider: process.env.LLM_PROVIDER || "ollama",
+
+	// LLM model
+	llmModel: process.env.LLM_MODEL || "llama2",
+
+	// OpenAI API key if using OpenAI
+	openaiApiKey: process.env.OPENAI_API_KEY || "",
+
+	// Ollama API URL if using Ollama
+	ollamaApiUrl: process.env.OLLAMA_API_URL || "http://localhost:11434",
+
+	// Maximum tokens to use for context
+	maxTokens: parseInt(process.env.MAX_TOKENS || "30000", 10),
+
+	// LLM generation temperature
+	temperature: parseFloat(process.env.TEMPERATURE || "0.7"),
+
+	// Documentation file structure
+	docStructure: {
+		overview: {
+			filename: "00-Overview.md",
+			title: "Project Overview",
+			description: "Overview of the project, its purpose, and primary features.",
+		},
+		architecture: {
+			filename: "01-Architecture.md",
+			title: "Architecture",
+			description: "System architecture, major components, and their relationships.",
+		},
+		setup: {
+			filename: "02-Setup.md",
+			title: "Setup & Installation",
+			description: "Instructions for setting up and running the project.",
+		},
+		apis: {
+			filename: "03-APIs.md",
+			title: "API Documentation",
+			description: "API endpoints, data models, and usage examples.",
+		},
+		components: {
+			filename: "04-Components.md",
+			title: "Components",
+			description: "Detailed description of the main components and modules.",
+		},
+		configuration: {
+			filename: "05-Configuration.md",
+			title: "Configuration",
+			description: "Configuration options and environment variables.",
+		},
+		development: {
+			filename: "06-Development.md",
+			title: "Development Guide",
+			description: "Guide for developers who want to contribute to the project.",
+		},
+		troubleshooting: {
+			filename: "07-Troubleshooting.md",
+			title: "Troubleshooting",
+			description: "Common issues and their solutions.",
+		},
+	},
 };
 
-// Sample .context.env file content
+// Ensure output path is absolute
+if (!path.isAbsolute(CONFIG.outputPath)) {
+	CONFIG.outputPath = path.join(process.cwd(), CONFIG.outputPath);
+}
+
+// Sample .env.context file content
 export const SAMPLE_ENV_CONTENT = `# LLM Provider Configuration
-# Choose between 'ollama', 'openai', 'groq', or 'bedrock'
-PROVIDER=ollama
+# Choose between 'ollama' or 'openai'
+LLM_PROVIDER=ollama
 
 # Model Configuration
-# For Ollama: llama3, codellama, phi3, etc.
+# For Ollama models, recommended options:
+# - deepseek-coder:1.3b  (Lightest and fastest, code-focused)
+# - phi:2b               (Microsoft's light model, good code understanding)
+# - codellama:7b         (Meta's code-focused model, good balance)
+# - deepseek-r1:7b       (Good code understanding, medium size)
+# - qwen2.5:0.5b         (Very small but effective model)
+# - mistral:7b           (General purpose but good at code understanding)
+# - mixtral-8x7b:instruct (Larger but high quality)
+# - llama3.1:8b          (Meta's latest model, good performance)
+#
 # For OpenAI: gpt-4, gpt-4-turbo, gpt-3.5-turbo, etc.
-# For Groq: llama3-8b-8192, mixtral-8x7b-32768, etc.
-# For Bedrock: amazon.titan-text-express-v1, anthropic.claude-3-sonnet-20240229, etc.
-MODEL=llama3
+LLM_MODEL=qwen2.5:0.5b
 
 # Provider-specific configurations
-# Ollama Configuration (if PROVIDER=ollama)
-OLLAMA_BASE_URL=http://localhost:11434
+# Ollama Configuration (if LLM_PROVIDER=ollama)
+OLLAMA_API_URL=http://localhost:11434
 
-# OpenAI Configuration (if PROVIDER=openai)
+# OpenAI Configuration (if LLM_PROVIDER=openai)
 # OPENAI_API_KEY=your_openai_api_key_here
-
-# Groq Configuration (if PROVIDER=groq)
-# GROQ_API_KEY=your_groq_api_key_here
-
-# AWS Bedrock Configuration (if PROVIDER=bedrock)
-# AWS_ACCESS_KEY_ID=your_aws_access_key_id_here
-# AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key_here
-# AWS_REGION=us-east-1
 
 # LLM Parameters
 TEMPERATURE=0.7
-MAX_TOKENS=4000
+MAX_TOKENS=30000
 
 # Application settings
 UPDATE_INTERVAL=5000
-OUTPUT_FILE=project-context.md
+OUTPUT_PATH=project-doc
 
-# System prompt for context generation
-SYSTEM_PROMPT=You are an AI assistant that analyzes code repositories and generates helpful documentation. Given the context of a project (files, structure, etc.), create a comprehensive Markdown document that includes: an overview, structure, key components, important files, dependencies, setup instructions, usage examples, and architectural decisions. Be concise but informative.
+# Model Selection Notes:
+# - Small models (1-4B): Run fast on minimal systems, sufficient for simple projects
+# - Medium models (7-8B): Good balance, sufficient for most projects
+# - Large models (>8B): Best output quality but slower, for complex projects
+# 
+# Best performing models for code documentation (from smallest to largest):
+# 1. qwen2.5:0.5b - Very lightweight option, good for minimal systems
+# 2. deepseek-coder:1.3b - Lightweight option, code-focused
+# 3. phi:2b - Microsoft's small model, good memory usage
+# 4. codellama:7b - Specially trained for code, good for detailed analysis
+# 5. deepseek-r1:7b - Strong general code understanding
+# 6. llama3.1:8b - Meta's latest model, high quality
+# 7. mixtral-8x7b - Most comprehensive analysis but slowest option
+
 `;
 
 /**
- * Loads configuration from .context.env file
- * Creates a sample if the file doesn't exist
+ * Creates a sample .env.context file if it doesn't exist
  */
-export function loadConfig(): Config {
-	const envPath = path.resolve(".context.env");
-	let config = { ...DEFAULT_CONFIG };
+export function ensureEnvFile(): void {
+	const envPath = path.resolve(".env.context");
 
-	// Check if .context.env exists
+	// Check if .env.context exists
 	if (!fs.existsSync(envPath)) {
-		console.log(chalk.yellow("No .context.env file found. Creating a sample..."));
+		console.log(chalk.yellow("No .env.context file found. Creating a sample..."));
 		fs.writeFileSync(envPath, SAMPLE_ENV_CONTENT);
-		console.log(chalk.green(".context.env sample created. Please edit it with your configuration."));
+		console.log(chalk.green(".env.context sample created. Please edit it with your configuration."));
 		console.log(chalk.blue("You can edit it with:"));
-		console.log(chalk.blue("  code .context.env  # If using VS Code"));
-		console.log(chalk.blue("  nano .context.env  # If using terminal"));
+		console.log(chalk.blue("  code .env.context  # If using VS Code"));
+		console.log(chalk.blue("  nano .env.context  # If using terminal"));
 		console.log(chalk.yellow("The application will continue with default settings..."));
-	} else {
-		// Load env variables
-		dotenv.config({ path: envPath });
-
-		// Update config with env values
-		if (process.env.PROVIDER) {
-			if (["ollama", "openai", "groq", "bedrock"].includes(process.env.PROVIDER)) {
-				config.provider = process.env.PROVIDER as "ollama" | "openai" | "groq" | "bedrock";
-			} else {
-				console.warn(chalk.yellow(`Invalid provider: ${process.env.PROVIDER}. Using default: ${config.provider}`));
-			}
-		}
-
-		if (process.env.MODEL) {
-			config.model = process.env.MODEL;
-		}
-
-		if (process.env.OLLAMA_BASE_URL && config.provider === "ollama") {
-			config.baseUrl = process.env.OLLAMA_BASE_URL;
-		}
-
-		if (process.env.OPENAI_API_KEY && config.provider === "openai") {
-			config.apiKey = process.env.OPENAI_API_KEY;
-		}
-
-		if (process.env.GROQ_API_KEY && config.provider === "groq") {
-			config.apiKey = process.env.GROQ_API_KEY;
-		}
-
-		if (process.env.AWS_REGION && config.provider === "bedrock") {
-			config.region = process.env.AWS_REGION;
-		}
-
-		if (process.env.SYSTEM_PROMPT) {
-			config.systemPrompt = process.env.SYSTEM_PROMPT;
-		}
-
-		if (process.env.TEMPERATURE) {
-			const temp = parseFloat(process.env.TEMPERATURE);
-			if (!isNaN(temp) && temp >= 0 && temp <= 1) {
-				config.temperature = temp;
-			}
-		}
-
-		if (process.env.MAX_TOKENS) {
-			const tokens = parseInt(process.env.MAX_TOKENS, 10);
-			if (!isNaN(tokens) && tokens > 0) {
-				config.maxTokens = tokens;
-			}
-		}
-
-		if (process.env.UPDATE_INTERVAL) {
-			const interval = parseInt(process.env.UPDATE_INTERVAL, 10);
-			if (!isNaN(interval) && interval > 0) {
-				config.interval = interval;
-			}
-		}
-
-		if (process.env.OUTPUT_FILE) {
-			config.outputFile = process.env.OUTPUT_FILE;
-		}
 	}
-
-	return config;
 }
+
+export default CONFIG;

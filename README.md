@@ -7,7 +7,7 @@ A service that watches your project and generates a comprehensive markdown file 
 - Analyzes your project files and structure
 - Generates detailed documentation with LLMs
 - Watches for file changes and automatically updates
-- Configurable via `.context.env` file
+- Configurable via `.env.context` file
 - Supports multiple LLM providers:
   - Ollama (local models)
   - OpenAI (GPT models)
@@ -45,7 +45,7 @@ project-context-to-md-file --model gpt-4
 
 ## Configuration
 
-The tool uses `.context.env` file for configuration. If not present, a sample will be created on first run.
+The tool uses `.env.context` file for configuration. If not present, a sample will be created on first run.
 
 ### Configuration Options
 
@@ -59,7 +59,7 @@ PROVIDER=ollama
 # For OpenAI: gpt-4, gpt-4-turbo, gpt-3.5-turbo, etc.
 # For Groq: llama3-8b-8192, mixtral-8x7b-32768, etc.
 # For Bedrock: amazon.titan-text-express-v1, anthropic.claude-3-sonnet-20240229, etc.
-MODEL=llama3
+MODEL=deepseek-coder
 
 # Provider-specific configurations
 # Ollama Configuration (if PROVIDER=ollama)

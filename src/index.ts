@@ -1,211 +1,246 @@
-#!/usr/bin/env node
-
-import { program } from "commander";
 import * as fs from "fs";
 import * as path from "path";
-import * as chokidar from "chokidar";
 import chalk from "chalk";
-import { loadConfig } from "./config";
-import { createLLMProvider, LLMProvider } from "./llm";
-import { collectProjectContext, getProjectInfo } from "./context";
+import chokidar from "chokidar";
+import CONFIG from "./config";
+import { createLLMProvider, DocSection } from "./llm";
+import { ContextManager } from "./vectorstore";
+import { ensureEnvFile } from "./config";
 
-// Program version and description
-program
-	.version("1.0.0")
-	.description("A service that converts project context to markdown file using LLMs")
-	.option("-o, --output <path>", "output markdown file path (overrides config)")
-	.option("-i, --interval <ms>", "update interval in milliseconds (overrides config)")
-	.option("-p, --provider <provider>", "LLM provider (ollama, openai, groq, or bedrock)")
-	.option("-m, --model <model>", "LLM model name")
-	.parse(process.argv);
+// Define document structure type for type safety
+type DocStructure = {
+	[key: string]: {
+		filename: string;
+		title: string;
+		description: string;
+	};
+};
 
-// Load configuration
-let config = loadConfig();
-const options = program.opts();
+// Initialize markdown content cache
+let markdownContentCache: Record<string, string> = {};
 
-// Override config with command line options if provided
-if (options.output) {
-	config.outputFile = options.output;
-}
+// Track if update is already in progress
+let updateInProgress = false;
 
-if (options.interval) {
-	const interval = parseInt(options.interval, 10);
-	if (!isNaN(interval) && interval > 0) {
-		config.interval = interval;
-	}
-}
+/**
+ * Ensure .gitignore has necessary entries
+ */
+function ensureGitIgnore(): void {
+	const gitignorePath = path.join(process.cwd(), ".gitignore");
 
-if (options.provider) {
-	if (["ollama", "openai", "groq", "bedrock"].includes(options.provider)) {
-		config.provider = options.provider as "ollama" | "openai" | "groq" | "bedrock";
+	// Check if .gitignore exists
+	if (fs.existsSync(gitignorePath)) {
+		let content = fs.readFileSync(gitignorePath, "utf8");
+		let modified = false;
+
+		// Check for .context-db
+		if (!content.includes(".context-db")) {
+			content += content.endsWith("\n") ? ".context-db/\n" : "\n.context-db/\n";
+			modified = true;
+		}
+
+		// Check for output directory
+		const outputDir = path.basename(CONFIG.outputPath);
+		if (!content.includes(outputDir)) {
+			content += content.endsWith("\n") ? `${outputDir}/\n` : `\n${outputDir}/\n`;
+			modified = true;
+		}
+
+		// Save changes if needed
+		if (modified) {
+			fs.writeFileSync(gitignorePath, content);
+			console.log(chalk.green("Updated .gitignore with necessary entries"));
+		}
 	} else {
-		console.warn(chalk.yellow(`Invalid provider: ${options.provider}. Valid options: ollama, openai, groq, bedrock. Using config value: ${config.provider}`));
-	}
-}
-
-if (options.model) {
-	config.model = options.model;
-}
-
-// File paths and settings
-const outputPath = path.resolve(config.outputFile);
-const updateInterval = config.interval;
-
-// Create LLM provider
-let llmProvider: LLMProvider;
-let initialContextGenerated = false;
-
-/**
- * Generates the markdown content from project context using LLM
- */
-async function generateMarkdown(initialGeneration = false): Promise<string> {
-	try {
-		const timestamp = new Date().toISOString();
-		const cwd = process.cwd();
-		const projectInfo = getProjectInfo(cwd);
-
-		// If this is the initial generation, we collect the full context
-		if (initialGeneration) {
-			console.log(chalk.blue("Collecting initial project context..."));
-			const fullContext = collectProjectContext(cwd, outputPath);
-
-			console.log(chalk.blue("Generating comprehensive project documentation..."));
-			const initialPrompt = "Analyze this project and generate comprehensive documentation.";
-			const initialContent = await llmProvider.generateContent(fullContext, initialPrompt);
-
-			initialContextGenerated = true;
-			return initialContent;
-		}
-		// For subsequent generations, we enhance what we already have
-		else if (fs.existsSync(outputPath)) {
-			const existingContent = fs.readFileSync(outputPath, "utf8");
-			const updatePrompt = `This is an existing project documentation. Please improve it, 
-			correct any errors, and ensure it's up to date with the current project state.
-			Incorporate information about any new files or changes.`;
-
-			// Only collect metadata for incremental updates to avoid sending too much text to the LLM
-			const metadataContext = `
-			Project Name: ${projectInfo.name}
-			Project Version: ${projectInfo.version}
-			Project Description: ${projectInfo.description}
-			
-			Current Timestamp: ${timestamp}
-			`;
-
-			console.log(chalk.blue("Enhancing existing documentation..."));
-			return await llmProvider.generateContent(metadataContext, updatePrompt);
-		}
-		// Fallback to standard generation
-		else {
-			console.log(chalk.blue("Collecting project context (fallback)..."));
-			const context = collectProjectContext(cwd, outputPath);
-			return await llmProvider.generateContent(context);
-		}
-	} catch (error) {
-		console.error(chalk.red("Error generating markdown:"), error);
-		return `# Error Generating Project Documentation
-
-An error occurred while generating the project documentation.
-
-Timestamp: ${new Date().toISOString()}
-
-Please check your configuration and try again.`;
+		console.log(chalk.yellow("No .gitignore file found. Consider creating one."));
 	}
 }
 
 /**
- * Writes the markdown content to the output file
+ * Initialize the documentation directory
  */
-async function writeMarkdownFile(): Promise<void> {
+function initializeDocDirectory(): void {
+	// Create output directory if it doesn't exist
+	if (!fs.existsSync(CONFIG.outputPath)) {
+		fs.mkdirSync(CONFIG.outputPath, { recursive: true });
+		console.log(chalk.green(`Created documentation directory at ${CONFIG.outputPath}`));
+	}
+
+	// Create README.md in the directory that lists all documentation files
+	const readmePath = path.join(CONFIG.outputPath, "README.md");
+	const readmeContent = `# Project Documentation
+
+This directory contains automated documentation for the project, generated by project-context-to-md-file.
+
+## Documentation Sections
+
+${Object.entries(CONFIG.docStructure as DocStructure)
+	.map(([key, section]) => `- [${section.title}](${section.filename}) - ${section.description}`)
+	.join("\n")}
+
+The documentation is automatically updated as the project changes.
+`;
+
+	fs.writeFileSync(readmePath, readmeContent);
+	console.log(chalk.green(`Created README.md in documentation directory`));
+}
+
+/**
+ * Generate markdown content for all documentation sections
+ */
+async function generateMarkdown(): Promise<Record<string, string>> {
+	// Create LLM provider
+	const llmProvider = createLLMProvider();
+
+	// Generate initial context
+	const contextManager = new ContextManager(process.cwd(), CONFIG.outputPath, CONFIG.maxTokens);
+	await contextManager.initialize();
+
+	console.log(chalk.blue("Collecting initial project context..."));
+
+	// Initialize content object for all sections
+	const generatedContent: Record<string, string> = {};
+
+	// Prepare document sections
+	const sections: DocSection[] = Object.entries(CONFIG.docStructure as DocStructure).map(([key, section]) => ({
+		key,
+		filename: section.filename,
+		title: section.title,
+		description: section.description,
+		content: "",
+	}));
+
+	// Generate content for each section
+	for (const section of sections) {
+		// Build context for this specific section
+		const context = await contextManager.buildSectionContext(section.key);
+
+		// Generate content using LLM
+		section.content = await llmProvider.generateContent(context, section.key);
+
+		// Store in our content dictionary
+		generatedContent[section.key] = section.content;
+	}
+
+	return generatedContent;
+}
+
+/**
+ * Update markdown content for all sections
+ */
+async function updateMarkdown(): Promise<void> {
+	if (updateInProgress) {
+		console.log(chalk.yellow("Update already in progress. Skipping this update cycle."));
+		return;
+	}
+
+	updateInProgress = true;
+	console.log(chalk.blue("Starting documentation update..."));
+
 	try {
-		const markdown = await generateMarkdown(!initialContextGenerated);
+		// Generate content for all sections
+		const generatedContent = await generateMarkdown();
 
-		// Create directory if it doesn't exist
-		const dir = path.dirname(outputPath);
-		if (!fs.existsSync(dir)) {
-			fs.mkdirSync(dir, { recursive: true });
-		}
+		// Write each section to its own file
+		await writeMarkdownFiles(generatedContent);
 
-		// Write to the file
-		fs.writeFileSync(outputPath, markdown);
-		console.log(chalk.green(`Updated markdown file at ${outputPath}`));
+		console.log(chalk.green("Documentation update completed."));
 	} catch (error) {
-		console.error(chalk.red("Error writing markdown file:"), error);
+		console.error(chalk.red("Error updating documentation:"), error);
+	} finally {
+		updateInProgress = false;
 	}
 }
 
 /**
- * Main function that starts the service
+ * Write markdown content to files
  */
-async function main(): Promise<void> {
-	console.log(chalk.blue("Starting project-context-to-md-file service"));
-	console.log(chalk.blue(`Output file: ${outputPath}`));
-	console.log(chalk.blue(`Update interval: ${updateInterval}ms`));
-	console.log(chalk.blue(`LLM Provider: ${config.provider}`));
-	console.log(chalk.blue(`LLM Model: ${config.model}`));
-
-	// Initialize LLM provider
-	try {
-		llmProvider = createLLMProvider(config);
-		const initialized = await llmProvider.initialize();
-
-		if (!initialized) {
-			console.error(chalk.red(`Failed to initialize ${config.provider} provider. Please check your configuration.`));
-			process.exit(1);
-		}
-	} catch (error) {
-		console.error(chalk.red("Error initializing LLM provider:"), error);
-		process.exit(1);
+async function writeMarkdownFiles(content: Record<string, string>): Promise<void> {
+	// Create output directory if it doesn't exist
+	if (!fs.existsSync(CONFIG.outputPath)) {
+		fs.mkdirSync(CONFIG.outputPath, { recursive: true });
 	}
 
-	// Generate the initial markdown file
-	await writeMarkdownFile();
+	// Write each section to its own file
+	for (const [key, sectionContent] of Object.entries(content)) {
+		const docStructure = CONFIG.docStructure as DocStructure;
+		const section = docStructure[key];
+		if (!section) continue;
 
-	// Set up a watcher to detect file changes
+		const filePath = path.join(CONFIG.outputPath, section.filename);
+
+		// Only write if content has changed
+		if (markdownContentCache[key] !== sectionContent) {
+			fs.writeFileSync(filePath, sectionContent);
+			markdownContentCache[key] = sectionContent;
+			console.log(chalk.green(`Updated documentation file at ${filePath}`));
+		}
+	}
+}
+
+/**
+ * Watch for file changes
+ */
+function watchFiles(): void {
+	// Ignore the output directory and node_modules
+	const ignoredPatterns = [CONFIG.outputPath, "node_modules/**", ".git/**"];
+
+	console.log(chalk.blue("Watching for file changes..."));
+
+	// Create a file watcher
 	const watcher = chokidar.watch(".", {
-		ignored: [
-			"**/node_modules/**",
-			"**/dist/**",
-			path.basename(outputPath), // Ignore our own output file
-			"**/.git/**",
-			".context.env",
-		],
+		ignored: ignoredPatterns,
 		persistent: true,
+		ignoreInitial: true,
 	});
 
-	// Update the markdown file when files change
-	let debounceTimer: NodeJS.Timeout | null = null;
-	let isProcessing = false;
-
-	watcher.on("all", (event: string, filePath: string) => {
-		if (debounceTimer) {
-			clearTimeout(debounceTimer);
-		}
-
-		// Skip if the file is our output file or .context.env
-		if (filePath === outputPath || filePath.includes(path.basename(outputPath)) || filePath.includes(".context.env")) {
+	// Handle file changes
+	watcher.on("all", (event, filepath) => {
+		// Don't react to changes in the output directory
+		if (filepath.startsWith(CONFIG.outputPath)) {
 			return;
 		}
 
-		// Debounce updates to avoid excessive file writes
-		debounceTimer = setTimeout(async () => {
-			if (isProcessing) return;
-
-			isProcessing = true;
-			console.log(chalk.blue(`Project files changed (${event}: ${filePath}), updating markdown...`));
-			await writeMarkdownFile();
-			isProcessing = false;
-		}, 1000); // 1-second debounce
+		console.log(chalk.yellow(`Project files changed (${event}: ${filepath}), updating documentation...`));
+		updateMarkdown();
 	});
 
-	// Also update at fixed intervals
-	setInterval(writeMarkdownFile, updateInterval);
-
-	console.log(chalk.green("Watching for file changes..."));
+	// Also set up a periodic update
+	setInterval(() => {
+		console.log(chalk.blue("Scheduled update triggered..."));
+		updateMarkdown();
+	}, CONFIG.updateInterval);
 }
 
-// Start the service
+/**
+ * Main function
+ */
+async function main(): Promise<void> {
+	console.log(chalk.blue("Starting project-context-to-md-file service"));
+	console.log(`Output directory: ${CONFIG.outputPath}`);
+	console.log(`Update interval: ${CONFIG.updateInterval}ms`);
+	console.log(`LLM Provider: ${CONFIG.llmProvider}`);
+	console.log(`LLM Model: ${CONFIG.llmModel}`);
+	console.log(`Max tokens for context: ${CONFIG.maxTokens}`);
+
+	// Ensure we have an env file
+	ensureEnvFile();
+
+	// Ensure .gitignore has necessary entries
+	ensureGitIgnore();
+
+	// Initialize the documentation directory
+	initializeDocDirectory();
+
+	// Generate initial markdown
+	await updateMarkdown();
+
+	// Start watching for changes
+	watchFiles();
+}
+
+// Run the program
 main().catch((error) => {
-	console.error(chalk.red("Error:"), error);
+	console.error(chalk.red("Fatal error:"), error);
 	process.exit(1);
 });

@@ -1,340 +1,191 @@
-import { Config } from "./config";
-import OpenAI from "openai";
-import axios from "axios";
 import chalk from "chalk";
-import { Groq } from "groq-sdk";
-import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime";
+import CONFIG from "./config";
 
 /**
- * Base LLM provider interface
+ * Interface for document section
  */
-export interface LLMProvider {
-	initialize(): Promise<boolean>;
-	generateContent(context: string, prompt?: string): Promise<string>;
+export interface DocSection {
+	key: string;
+	filename: string;
+	title: string;
+	description: string;
+	content: string;
 }
 
 /**
- * Factory for creating LLM providers
+ * Abstract LLM provider
  */
-export function createLLMProvider(config: Config): LLMProvider {
-	switch (config.provider) {
-		case "ollama":
-			return new OllamaProvider(config);
-		case "openai":
-			return new OpenAIProvider(config);
-		case "groq":
-			return new GroqProvider(config);
-		case "bedrock":
-			return new BedrockProvider(config);
-		default:
-			throw new Error(`Unknown provider: ${config.provider}`);
+abstract class LLMProvider {
+	protected temperature: number;
+
+	constructor(temperature = 0.7) {
+		this.temperature = temperature;
+	}
+
+	abstract generateContent(context: string, sectionKey?: string): Promise<string>;
+
+	/**
+	 * Clean model output from thinking tags and other artifacts
+	 */
+	protected cleanModelOutput(text: string): string {
+		// Remove <think>...</think> tags and their content
+		let cleaned = text.replace(/<think>[\s\S]*?<\/think>/g, "");
+
+		// Remove other potential tags that some models might generate
+		cleaned = cleaned.replace(/<\/?[^>]+(>|$)/g, "");
+
+		// Remove markdown code block markers for markdown
+		cleaned = cleaned.replace(/^```markdown\s*\n/m, "");
+		cleaned = cleaned.replace(/\n```\s*$/m, "");
+
+		// Remove common prefixes like "Sure!", "Here is", etc.
+		const commonPrefixes = [
+			/^Sure!(?:\s+|$)/i,
+			/^Sure thing!(?:\s+|$)/i,
+			/^Here is(?:\s+|$)/i,
+			/^Here's(?:\s+|$)/i,
+			/^Below is(?:\s+|$)/i,
+			/^Here you go(?:\s+|$)/i,
+			/^I've created(?:\s+|$)/i,
+			/^I have created(?:\s+|$)/i,
+			/^I'll create(?:\s+|$)/i,
+			/^I will create(?:\s+|$)/i,
+			/^Let me provide(?:\s+|$)/i,
+			/^This is(?:\s+|$)/i,
+			/^Based on(?:\s+|$)/i,
+		];
+
+		for (const prefix of commonPrefixes) {
+			cleaned = cleaned.replace(prefix, "");
+		}
+
+		// Fix any double spaces or excessive newlines
+		cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
+		cleaned = cleaned.replace(/  +/g, " ");
+
+		return cleaned.trim();
 	}
 }
 
 /**
- * Ollama LLM provider implementation
+ * Ollama LLM provider
  */
-class OllamaProvider implements LLMProvider {
-	private config: Config;
+class OllamaProvider extends LLMProvider {
+	private model: string;
 	private baseUrl: string;
 
-	constructor(config: Config) {
-		this.config = config;
-		this.baseUrl = config.baseUrl || "http://localhost:11434";
+	constructor(model: string, baseUrl: string, temperature: number) {
+		super(temperature);
+		this.model = model;
+		this.baseUrl = baseUrl;
 	}
 
-	async initialize(): Promise<boolean> {
+	async generateContent(context: string, sectionKey?: string): Promise<string> {
 		try {
-			// Check if Ollama is running and the model is available
-			const response = await axios.get(`${this.baseUrl}/api/tags`);
+			console.log(chalk.blue(`Generating content for ${sectionKey || "document"} with Ollama using model ${this.model}...`));
 
-			if (response.status === 200) {
-				const models = response.data.models || [];
-				const modelExists = models.some((model: any) => model.name === this.config.model);
-
-				if (!modelExists) {
-					console.warn(chalk.yellow(`Model '${this.config.model}' not found in Ollama. Available models:`));
-					models.forEach((model: any) => {
-						console.log(chalk.blue(`- ${model.name}`));
-					});
-					return false;
-				}
-
-				console.log(chalk.green(`Successfully connected to Ollama with model: ${this.config.model}`));
-				return true;
-			}
-			return false;
-		} catch (error) {
-			console.error(chalk.red("Failed to connect to Ollama:"), error);
-			console.log(chalk.yellow("Make sure Ollama is running on " + this.baseUrl));
-			return false;
-		}
-	}
-
-	async generateContent(context: string, prompt?: string): Promise<string> {
-		try {
-			const systemPrompt = this.config.systemPrompt;
-			const userPrompt = prompt || "Analyze this project and generate comprehensive documentation.";
-
-			// Use Ollama API directly since the library has compatibility issues
-			const response = await axios.post(`${this.baseUrl}/api/chat`, {
-				model: this.config.model,
-				messages: [
-					{
-						role: "system",
-						content: systemPrompt,
-					},
-					{
-						role: "user",
-						content: `${userPrompt}\n\nProject context:\n${context}`,
-					},
-				],
-				options: {
-					temperature: this.config.temperature,
+			const response = await fetch(`${this.baseUrl}/api/chat`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
 				},
-			});
-
-			return response.data.message.content;
-		} catch (error) {
-			console.error(chalk.red("Error generating content with Ollama:"), error);
-			return "Error generating content. Please check your Ollama configuration and try again.";
-		}
-	}
-}
-
-/**
- * OpenAI provider implementation
- */
-class OpenAIProvider implements LLMProvider {
-	private config: Config;
-	private client: OpenAI | null = null;
-
-	constructor(config: Config) {
-		this.config = config;
-	}
-
-	async initialize(): Promise<boolean> {
-		if (!this.config.apiKey) {
-			console.error(chalk.red("OpenAI API key is required. Please set OPENAI_API_KEY in .context.env"));
-			return false;
-		}
-
-		try {
-			this.client = new OpenAI({
-				apiKey: this.config.apiKey,
-			});
-
-			// Test the connection with a simple request
-			await this.client.models.list();
-
-			console.log(chalk.green(`Successfully connected to OpenAI with model: ${this.config.model}`));
-			return true;
-		} catch (error) {
-			console.error(chalk.red("Failed to connect to OpenAI:"), error);
-			return false;
-		}
-	}
-
-	async generateContent(context: string, prompt?: string): Promise<string> {
-		if (!this.client) {
-			return "OpenAI client not initialized. Please check your configuration.";
-		}
-
-		try {
-			const systemPrompt = this.config.systemPrompt;
-			const userPrompt = prompt || "Analyze this project and generate comprehensive documentation.";
-
-			const response = await this.client.chat.completions.create({
-				model: this.config.model,
-				messages: [
-					{
-						role: "system",
-						content: systemPrompt,
-					},
-					{
-						role: "user",
-						content: `${userPrompt}\n\nProject context:\n${context}`,
-					},
-				],
-				temperature: this.config.temperature,
-				max_tokens: this.config.maxTokens,
-			});
-
-			return response.choices[0]?.message?.content || "No content generated";
-		} catch (error) {
-			console.error(chalk.red("Error generating content with OpenAI:"), error);
-			return "Error generating content. Please check your OpenAI configuration and try again.";
-		}
-	}
-}
-
-/**
- * Groq provider implementation
- */
-class GroqProvider implements LLMProvider {
-	private config: Config;
-	private client: Groq | null = null;
-
-	constructor(config: Config) {
-		this.config = config;
-	}
-
-	async initialize(): Promise<boolean> {
-		if (!this.config.apiKey) {
-			console.error(chalk.red("Groq API key is required. Please set GROQ_API_KEY in .context.env"));
-			return false;
-		}
-
-		try {
-			this.client = new Groq({
-				apiKey: this.config.apiKey,
-			});
-
-			// Test the connection with a simple request
-			await this.client.chat.completions.create({
-				messages: [{ role: "user", content: "Hello" }],
-				model: this.config.model,
-				max_tokens: 1,
-			});
-
-			console.log(chalk.green(`Successfully connected to Groq with model: ${this.config.model}`));
-			return true;
-		} catch (error) {
-			console.error(chalk.red("Failed to connect to Groq:"), error);
-			return false;
-		}
-	}
-
-	async generateContent(context: string, prompt?: string): Promise<string> {
-		if (!this.client) {
-			return "Groq client not initialized. Please check your configuration.";
-		}
-
-		try {
-			const systemPrompt = this.config.systemPrompt;
-			const userPrompt = prompt || "Analyze this project and generate comprehensive documentation.";
-
-			const response = await this.client.chat.completions.create({
-				model: this.config.model,
-				messages: [
-					{
-						role: "system",
-						content: systemPrompt,
-					},
-					{
-						role: "user",
-						content: `${userPrompt}\n\nProject context:\n${context}`,
-					},
-				],
-				temperature: this.config.temperature,
-				max_tokens: this.config.maxTokens,
-			});
-
-			return response.choices[0]?.message?.content || "No content generated";
-		} catch (error) {
-			console.error(chalk.red("Error generating content with Groq:"), error);
-			return "Error generating content. Please check your Groq configuration and try again.";
-		}
-	}
-}
-
-/**
- * Amazon Bedrock provider implementation
- */
-class BedrockProvider implements LLMProvider {
-	private config: Config;
-	private client: BedrockRuntimeClient | null = null;
-
-	constructor(config: Config) {
-		this.config = config;
-	}
-
-	async initialize(): Promise<boolean> {
-		if (!this.config.region) {
-			console.error(chalk.red("AWS Region is required. Please set AWS_REGION in .context.env"));
-			return false;
-		}
-
-		try {
-			this.client = new BedrockRuntimeClient({
-				region: this.config.region,
-			});
-
-			console.log(chalk.green(`Successfully initialized AWS Bedrock client with model: ${this.config.model} in region: ${this.config.region}`));
-			return true;
-		} catch (error) {
-			console.error(chalk.red("Failed to initialize AWS Bedrock client:"), error);
-			return false;
-		}
-	}
-
-	async generateContent(context: string, prompt?: string): Promise<string> {
-		if (!this.client) {
-			return "AWS Bedrock client not initialized. Please check your configuration.";
-		}
-
-		try {
-			const systemPrompt = this.config.systemPrompt;
-			const userPrompt = prompt || "Analyze this project and generate comprehensive documentation.";
-
-			// Prepare request based on the model type
-			let payload: any;
-
-			if (this.config.model.includes("anthropic.claude")) {
-				// Claude models
-				payload = {
-					anthropic_version: "bedrock-2023-05-31",
-					max_tokens: this.config.maxTokens,
-					temperature: this.config.temperature,
-					system: systemPrompt,
+				body: JSON.stringify({
+					model: this.model,
 					messages: [
 						{
-							role: "user",
-							content: `${userPrompt}\n\nProject context:\n${context}`,
+							role: "system",
+							content: context,
 						},
 					],
-				};
-			} else if (this.config.model.includes("amazon.titan")) {
-				// Amazon Titan models
-				payload = {
-					inputText: `${systemPrompt}\n\n${userPrompt}\n\nProject context:\n${context}`,
-					textGenerationConfig: {
-						maxTokenCount: this.config.maxTokens,
-						temperature: this.config.temperature,
-						topP: 0.9,
-					},
-				};
-			} else {
-				// Generic approach for other models
-				payload = {
-					prompt: `${systemPrompt}\n\n${userPrompt}\n\nProject context:\n${context}`,
-					max_tokens: this.config.maxTokens,
-					temperature: this.config.temperature,
-				};
-			}
-
-			const command = new InvokeModelCommand({
-				modelId: this.config.model,
-				body: JSON.stringify(payload),
+					stream: false,
+					temperature: this.temperature,
+				}),
 			});
 
-			const response = await this.client.send(command);
-			const responseBody = JSON.parse(new TextDecoder().decode(response.body));
-
-			// Extract content based on model
-			let content = "";
-			if (this.config.model.includes("anthropic.claude")) {
-				content = responseBody.content[0]?.text || "";
-			} else if (this.config.model.includes("amazon.titan")) {
-				content = responseBody.results[0]?.outputText || "";
-			} else {
-				content = responseBody.completion || responseBody.generated_text || "";
+			if (!response.ok) {
+				throw new Error(`Error from Ollama API: ${response.statusText}`);
 			}
 
-			return content || "No content generated";
+			const data = await response.json();
+			console.log(chalk.green(`Successfully generated content with Ollama chat API for ${sectionKey || "document"}`));
+
+			// Clean the model output before returning
+			return this.cleanModelOutput(data.message.content);
 		} catch (error) {
-			console.error(chalk.red("Error generating content with AWS Bedrock:"), error);
-			return "Error generating content. Please check your AWS Bedrock configuration and try again.";
+			console.error(chalk.red("Error generating content with Ollama:"), error);
+			return `Error generating content: ${error}`;
 		}
+	}
+}
+
+/**
+ * OpenAI LLM provider
+ */
+class OpenAIProvider extends LLMProvider {
+	private model: string;
+	private apiKey: string;
+
+	constructor(model: string, apiKey: string, temperature: number) {
+		super(temperature);
+		this.model = model;
+		this.apiKey = apiKey;
+	}
+
+	async generateContent(context: string, sectionKey?: string): Promise<string> {
+		try {
+			console.log(chalk.blue(`Generating content for ${sectionKey || "document"} with OpenAI using model ${this.model}...`));
+
+			const response = await fetch("https://api.openai.com/v1/chat/completions", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${this.apiKey}`,
+				},
+				body: JSON.stringify({
+					model: this.model,
+					messages: [
+						{
+							role: "system",
+							content: context,
+						},
+					],
+					temperature: this.temperature,
+				}),
+			});
+
+			if (!response.ok) {
+				throw new Error(`Error from OpenAI API: ${response.statusText}`);
+			}
+
+			const data = await response.json();
+			console.log(chalk.green(`Successfully generated content with OpenAI API for ${sectionKey || "document"}`));
+
+			// Clean the model output before returning
+			return this.cleanModelOutput(data.choices[0].message.content);
+		} catch (error) {
+			console.error(chalk.red("Error generating content with OpenAI:"), error);
+			return `Error generating content: ${error}`;
+		}
+	}
+}
+
+/**
+ * Factory function to create the appropriate LLM provider
+ */
+export function createLLMProvider(): LLMProvider {
+	const provider = CONFIG.llmProvider.toLowerCase();
+	const temperature = CONFIG.temperature;
+
+	if (provider === "ollama") {
+		return new OllamaProvider(CONFIG.llmModel, CONFIG.ollamaApiUrl, temperature);
+	} else if (provider === "openai") {
+		if (!CONFIG.openaiApiKey) {
+			console.error(chalk.red("OpenAI API key is required but not provided."));
+			process.exit(1);
+		}
+		return new OpenAIProvider(CONFIG.llmModel, CONFIG.openaiApiKey, temperature);
+	} else {
+		console.error(chalk.red(`Unsupported LLM provider: ${provider}`));
+		process.exit(1);
 	}
 }

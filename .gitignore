@@ -13,6 +13,7 @@ project-context.md
 .env.development.local
 .env.test.local
 .env.production.local
+.env.context
 
 # Logs
 logs
@@ -34,4 +35,8 @@ yarn-error.log*
 .Spotlight-V100
 .Trashes
 ehthumbs.db
-Thumbs.db 
+Thumbs.db
+
+# Project specific
+.context-db/
+project-doc/ 
