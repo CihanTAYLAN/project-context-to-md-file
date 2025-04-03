@@ -13,7 +13,7 @@ export interface DocSection {
 }
 
 /**
- * Abstract LLM provider
+ * Abstract LLM provider class
  */
 abstract class LLMProvider {
 	protected temperature: number;
