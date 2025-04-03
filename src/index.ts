@@ -4,129 +4,113 @@ import { program } from "commander";
 import * as fs from "fs";
 import * as path from "path";
 import * as chokidar from "chokidar";
+import chalk from "chalk";
+import { loadConfig } from "./config";
+import { createLLMProvider, LLMProvider } from "./llm";
+import { collectProjectContext, getProjectInfo } from "./context";
 
 // Program version and description
 program
 	.version("1.0.0")
-	.description("A service that converts project context to markdown file")
-	.option("-o, --output <path>", "output markdown file path", "project-context.md")
-	.option("-i, --interval <ms>", "update interval in milliseconds", "5000")
+	.description("A service that converts project context to markdown file using LLMs")
+	.option("-o, --output <path>", "output markdown file path (overrides config)")
+	.option("-i, --interval <ms>", "update interval in milliseconds (overrides config)")
+	.option("-p, --provider <provider>", "LLM provider (ollama, openai, groq, or bedrock)")
+	.option("-m, --model <model>", "LLM model name")
 	.parse(process.argv);
 
+// Load configuration
+let config = loadConfig();
 const options = program.opts();
 
-// File paths and settings
-const outputPath = path.resolve(options.output);
-const updateInterval = parseInt(options.interval, 10);
-
-/**
- * Generates project file structure as a tree
- */
-async function generateFileTree(dir: string, depth = 0, maxDepth = 3): Promise<string> {
-	if (depth > maxDepth) return "";
-
-	const files = fs.readdirSync(dir);
-	let tree = "";
-
-	for (const file of files) {
-		// Skip hidden files and directories
-		if (file.startsWith(".")) continue;
-
-		// Skip node_modules, dist and our output file
-		if (["node_modules", "dist"].includes(file) || path.resolve(dir, file) === outputPath) continue;
-
-		const filePath = path.join(dir, file);
-		const stats = fs.statSync(filePath);
-		const indent = "  ".repeat(depth);
-
-		if (stats.isDirectory()) {
-			tree += `${indent}- 📁 ${file}/\n`;
-			const subtree = await generateFileTree(filePath, depth + 1, maxDepth);
-			tree += subtree;
-		} else {
-			tree += `${indent}- 📄 ${file}\n`;
-		}
-	}
-
-	return tree;
+// Override config with command line options if provided
+if (options.output) {
+	config.outputFile = options.output;
 }
 
+if (options.interval) {
+	const interval = parseInt(options.interval, 10);
+	if (!isNaN(interval) && interval > 0) {
+		config.interval = interval;
+	}
+}
+
+if (options.provider) {
+	if (["ollama", "openai", "groq", "bedrock"].includes(options.provider)) {
+		config.provider = options.provider as "ollama" | "openai" | "groq" | "bedrock";
+	} else {
+		console.warn(chalk.yellow(`Invalid provider: ${options.provider}. Valid options: ollama, openai, groq, bedrock. Using config value: ${config.provider}`));
+	}
+}
+
+if (options.model) {
+	config.model = options.model;
+}
+
+// File paths and settings
+const outputPath = path.resolve(config.outputFile);
+const updateInterval = config.interval;
+
+// Create LLM provider
+let llmProvider: LLMProvider;
+let initialContextGenerated = false;
+
 /**
- * Gets project dependencies from package.json
+ * Generates the markdown content from project context using LLM
  */
-function getProjectDependencies(): { dependencies: Record<string, string>; devDependencies: Record<string, string> } {
+async function generateMarkdown(initialGeneration = false): Promise<string> {
 	try {
-		const packageJsonPath = path.resolve("package.json");
-		if (fs.existsSync(packageJsonPath)) {
-			const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
-			return {
-				dependencies: packageJson.dependencies || {},
-				devDependencies: packageJson.devDependencies || {},
-			};
+		const timestamp = new Date().toISOString();
+		const cwd = process.cwd();
+		const projectInfo = getProjectInfo(cwd);
+
+		// If this is the initial generation, we collect the full context
+		if (initialGeneration) {
+			console.log(chalk.blue("Collecting initial project context..."));
+			const fullContext = collectProjectContext(cwd, outputPath);
+
+			console.log(chalk.blue("Generating comprehensive project documentation..."));
+			const initialPrompt = "Analyze this project and generate comprehensive documentation.";
+			const initialContent = await llmProvider.generateContent(fullContext, initialPrompt);
+
+			initialContextGenerated = true;
+			return initialContent;
+		}
+		// For subsequent generations, we enhance what we already have
+		else if (fs.existsSync(outputPath)) {
+			const existingContent = fs.readFileSync(outputPath, "utf8");
+			const updatePrompt = `This is an existing project documentation. Please improve it, 
+			correct any errors, and ensure it's up to date with the current project state.
+			Incorporate information about any new files or changes.`;
+
+			// Only collect metadata for incremental updates to avoid sending too much text to the LLM
+			const metadataContext = `
+			Project Name: ${projectInfo.name}
+			Project Version: ${projectInfo.version}
+			Project Description: ${projectInfo.description}
+			
+			Current Timestamp: ${timestamp}
+			`;
+
+			console.log(chalk.blue("Enhancing existing documentation..."));
+			return await llmProvider.generateContent(metadataContext, updatePrompt);
+		}
+		// Fallback to standard generation
+		else {
+			console.log(chalk.blue("Collecting project context (fallback)..."));
+			const context = collectProjectContext(cwd, outputPath);
+			return await llmProvider.generateContent(context);
 		}
 	} catch (error) {
-		console.error("Error reading package.json:", error);
+		console.error(chalk.red("Error generating markdown:"), error);
+		return `# Error Generating Project Documentation
+
+An error occurred while generating the project documentation.
+
+Timestamp: ${new Date().toISOString()}
+
+Please check your configuration and try again.`;
 	}
-
-	return { dependencies: {}, devDependencies: {} };
-}
-
-/**
- * Finds important files in the project
- */
-function findImportantFiles(): string[] {
-	const importantFiles = ["package.json", "tsconfig.json", "README.md", ".gitignore", ".npmignore", "LICENSE"];
-
-	return importantFiles.filter((file) => fs.existsSync(path.resolve(file)));
-}
-
-/**
- * Generates the markdown content from project context
- */
-async function generateMarkdown(): Promise<string> {
-	const timestamp = new Date().toISOString();
-	const cwd = process.cwd();
-	const projectName = path.basename(cwd);
-
-	// Get project structure
-	const fileTree = await generateFileTree(".");
-
-	// Get dependencies
-	const { dependencies, devDependencies } = getProjectDependencies();
-
-	// Get important files
-	const importantFiles = findImportantFiles();
-
-	return `# Project Context for ${projectName}
-
-Generated at: ${timestamp}
-
-## Project Structure
-
-\`\`\`
-${fileTree || "No files found."}
-\`\`\`
-
-## Important Files
-
-${importantFiles.map((file) => `- ${file}`).join("\n") || "No important files found."}
-
-## Dependencies
-
-### Production Dependencies
-${
-	Object.entries(dependencies)
-		.map(([dep, version]) => `- ${dep}: ${version}`)
-		.join("\n") || "No production dependencies found."
-}
-
-### Development Dependencies
-${
-	Object.entries(devDependencies)
-		.map(([dep, version]) => `- ${dep}: ${version}`)
-		.join("\n") || "No development dependencies found."
-}
-`;
 }
 
 /**
@@ -134,7 +118,7 @@ ${
  */
 async function writeMarkdownFile(): Promise<void> {
 	try {
-		const markdown = await generateMarkdown();
+		const markdown = await generateMarkdown(!initialContextGenerated);
 
 		// Create directory if it doesn't exist
 		const dir = path.dirname(outputPath);
@@ -144,9 +128,9 @@ async function writeMarkdownFile(): Promise<void> {
 
 		// Write to the file
 		fs.writeFileSync(outputPath, markdown);
-		console.log(`Updated markdown file at ${outputPath}`);
+		console.log(chalk.green(`Updated markdown file at ${outputPath}`));
 	} catch (error) {
-		console.error("Error generating markdown file:", error);
+		console.error(chalk.red("Error writing markdown file:"), error);
 	}
 }
 
@@ -154,9 +138,25 @@ async function writeMarkdownFile(): Promise<void> {
  * Main function that starts the service
  */
 async function main(): Promise<void> {
-	console.log(`Starting project-context-to-md-file service`);
-	console.log(`Output file: ${outputPath}`);
-	console.log(`Update interval: ${updateInterval}ms`);
+	console.log(chalk.blue("Starting project-context-to-md-file service"));
+	console.log(chalk.blue(`Output file: ${outputPath}`));
+	console.log(chalk.blue(`Update interval: ${updateInterval}ms`));
+	console.log(chalk.blue(`LLM Provider: ${config.provider}`));
+	console.log(chalk.blue(`LLM Model: ${config.model}`));
+
+	// Initialize LLM provider
+	try {
+		llmProvider = createLLMProvider(config);
+		const initialized = await llmProvider.initialize();
+
+		if (!initialized) {
+			console.error(chalk.red(`Failed to initialize ${config.provider} provider. Please check your configuration.`));
+			process.exit(1);
+		}
+	} catch (error) {
+		console.error(chalk.red("Error initializing LLM provider:"), error);
+		process.exit(1);
+	}
 
 	// Generate the initial markdown file
 	await writeMarkdownFile();
@@ -168,6 +168,7 @@ async function main(): Promise<void> {
 			"**/dist/**",
 			path.basename(outputPath), // Ignore our own output file
 			"**/.git/**",
+			".context.env",
 		],
 		persistent: true,
 	});
@@ -181,8 +182,8 @@ async function main(): Promise<void> {
 			clearTimeout(debounceTimer);
 		}
 
-		// Skip if the file is our output file
-		if (filePath === outputPath || filePath.includes(path.basename(outputPath))) {
+		// Skip if the file is our output file or .context.env
+		if (filePath === outputPath || filePath.includes(path.basename(outputPath)) || filePath.includes(".context.env")) {
 			return;
 		}
 
@@ -191,7 +192,7 @@ async function main(): Promise<void> {
 			if (isProcessing) return;
 
 			isProcessing = true;
-			console.log(`Project files changed (${event}: ${filePath}), updating markdown...`);
+			console.log(chalk.blue(`Project files changed (${event}: ${filePath}), updating markdown...`));
 			await writeMarkdownFile();
 			isProcessing = false;
 		}, 1000); // 1-second debounce
@@ -200,11 +201,11 @@ async function main(): Promise<void> {
 	// Also update at fixed intervals
 	setInterval(writeMarkdownFile, updateInterval);
 
-	console.log("Watching for file changes...");
+	console.log(chalk.green("Watching for file changes..."));
 }
 
 // Start the service
 main().catch((error) => {
-	console.error("Error:", error);
+	console.error(chalk.red("Error:"), error);
 	process.exit(1);
 });
