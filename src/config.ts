@@ -18,17 +18,32 @@ const CONFIG = {
 	// Update frequency in milliseconds
 	updateInterval: parseInt(process.env.UPDATE_INTERVAL || "5000", 10),
 
-	// LLM provider (ollama or openai)
-	llmProvider: process.env.LLM_PROVIDER || "ollama",
+	// LLM provider
+	llmProvider: process.env.PROVIDER || "ollama",
 
 	// LLM model
-	llmModel: process.env.LLM_MODEL || "llama2",
+	llmModel: process.env.LLM_MODEL || "qwen2.5:0.5b",
 
-	// OpenAI API key if using OpenAI
+	// OpenAI Configuration
 	openaiApiKey: process.env.OPENAI_API_KEY || "",
+	openaiApiUrl: process.env.OPENAI_API_URL || "https://api.openai.com/v1",
 
-	// Ollama API URL if using Ollama
+	// Ollama Configuration
 	ollamaApiUrl: process.env.OLLAMA_API_URL || "http://localhost:11434",
+
+	// Groq Configuration
+	groqApiKey: process.env.GROQ_API_KEY || "",
+	groqApiUrl: process.env.GROQ_API_URL || "https://api.groq.com/v1",
+
+	// Bedrock Configuration
+	awsAccessKeyId: process.env.AWS_ACCESS_KEY_ID || "",
+	awsSecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || "",
+	awsRegion: process.env.AWS_REGION || "us-east-1",
+	bedrockApiUrl: process.env.BEDROCK_API_URL || "",
+
+	// OpenWebUI Configuration
+	openwebuiApiKey: process.env.OPENWEBUI_API_KEY || "",
+	openwebuiApiUrl: process.env.OPENWEBUI_API_URL || "http://localhost:5000/api",
 
 	// Maximum tokens to use for context
 	maxTokens: parseInt(process.env.MAX_TOKENS || "30000", 10),
@@ -41,42 +56,58 @@ const CONFIG = {
 		overview: {
 			filename: "00-Overview.md",
 			title: "Project Overview",
-			description: "Overview of the project, its purpose, and primary features.",
+			description: "Overview of the project, its purpose, and primary features. Project goals and objectives, Use cases and problems it solves, High-level architecture and key components",
 		},
-		architecture: {
-			filename: "01-Architecture.md",
-			title: "Architecture",
-			description: "System architecture, major components, and their relationships.",
+		toolsTechnologies: {
+			filename: "01-Tools-Technologies.md",
+			title: "Tools & Technologies",
+			description:
+				"Programming languages and frameworks, Database technologies (MySQL, PostgreSQL, MongoDB, etc.), API & integrations (REST, gRPC, WebSockets, etc.), DevOps & deployment tools (Docker, Kubernetes, AWS, CI/CD, etc.)",
 		},
-		setup: {
-			filename: "02-Setup.md",
-			title: "Setup & Installation",
-			description: "Instructions for setting up and running the project.",
+		systemArchitecture: {
+			filename: "02-System-Architecture.md",
+			title: "System Architecture",
+			description: "High-level architecture diagram, Backend & frontend structure, Monolithic vs. microservices approach and reasoning, Scalability and performance optimizations",
 		},
-		apis: {
-			filename: "03-APIs.md",
-			title: "API Documentation",
-			description: "API endpoints, data models, and usage examples.",
+		dataModel: {
+			filename: "03-Data-Model.md",
+			title: "Data Model & Structure",
+			description: "Database schema, Key tables and relationships, Caching & indexing strategies",
 		},
-		components: {
-			filename: "04-Components.md",
-			title: "Components",
-			description: "Detailed description of the main components and modules.",
+		apiIntegrations: {
+			filename: "04-API-Design-Integrations.md",
+			title: "API Design & Integrations",
+			description:
+				"API design principles, RESTful API endpoints, API documentation, Integration strategies.REST/gRPC/WebSocket endpoints with descriptions, Authentication & authorization (JWT, OAuth, API Key, etc.), Third-party service integrations",
 		},
-		configuration: {
-			filename: "05-Configuration.md",
-			title: "Configuration",
-			description: "Configuration options and environment variables.",
+		security: {
+			filename: "05-Security.md",
+			title: "Security",
+			description:
+				"Security features, Authentication & authorization, Data protection, API security, Third-party service security.Data security and encryption methods, Authentication & authorization strategies, Measures against security vulnerabilities",
 		},
-		development: {
-			filename: "06-Development.md",
-			title: "Development Guide",
-			description: "Guide for developers who want to contribute to the project.",
+		codeStandards: {
+			filename: "06-Code-Standards-Best-Practices.md",
+			title: "Code Standards & Best Practices",
+			description:
+				"Code standards, Best practices, Error handling, Logging, Testing, Documentation, Code readability, Maintainability, Performance optimizations.Coding conventions (SOLID, DRY, KISS, etc.), Logging & error handling strategies, Testing strategies (Unit, Integration, E2E)",
 		},
-		troubleshooting: {
-			filename: "07-Troubleshooting.md",
-			title: "Troubleshooting",
-			description: "Common issues and their solutions.",
+		deployment: {
+			filename: "07-Deployment-DevOps-Process.md",
+			title: "Deployment & DevOps Process",
+			description:
+				"Deployment process, CI/CD pipeline, Monitoring & logging, Performance optimization, Scaling strategies, Backup & recovery. CI/CD pipelines and automation, Server configurations and hosting options, Backup and monitoring strategies",
+		},
+		userGuide: {
+			filename: "08-User-Guide.md",
+			title: "User Guide",
+			description:
+				"User-friendly documentation, Guides for different user roles (developers, administrators, end-users), Tutorials, FAQs, Troubleshooting tips.Installation & setup instructions, User roles and permissions, Example usage scenarios",
+		},
+		futureDevelopment: {
+			filename: "09-Future-Development-Roadmap.md",
+			title: "Future Development & Roadmap",
+			description: "Future development plans, Roadmap, Feature requests, Contribution guidelines, Release notes.Planned features and enhancements, Scalability and performance goals, Long-term vision",
 		},
 	},
 };
@@ -88,8 +119,8 @@ if (!path.isAbsolute(CONFIG.outputPath)) {
 
 // Sample .env.context file content
 export const SAMPLE_ENV_CONTENT = `# LLM Provider Configuration
-# Choose between 'ollama' or 'openai'
-LLM_PROVIDER=ollama
+# Choose between 'ollama', 'openai', 'groq', 'bedrock', or 'openwebui'
+PROVIDER=ollama
 
 # Model Configuration
 # For Ollama models, recommended options:
@@ -102,15 +133,34 @@ LLM_PROVIDER=ollama
 # - mixtral-8x7b:instruct (Larger but high quality)
 # - llama3.1:8b          (Meta's latest model, good performance)
 #
-# For OpenAI: gpt-4, gpt-4-turbo, gpt-3.5-turbo, etc.
-LLM_MODEL=qwen2.5:0.5b
+# For OpenAI: gpt-4, gpt-4-turbo, gpt-3.5-turbo
+# For Groq: llama3-8b-8192, mixtral-8x7b-32768
+# For Bedrock: amazon.titan-text-express-v1, anthropic.claude-3-sonnet-20240229
+# For OpenWebUI: Same as Ollama models
+LLM_MODEL=codellama:7b
 
 # Provider-specific configurations
-# Ollama Configuration (if LLM_PROVIDER=ollama)
+
+# Ollama Configuration (if PROVIDER=ollama)
 OLLAMA_API_URL=http://localhost:11434
 
-# OpenAI Configuration (if LLM_PROVIDER=openai)
-# OPENAI_API_KEY=your_openai_api_key_here
+# OpenAI Configuration (if PROVIDER=openai)
+# OPENAI_API_KEY=sk-xxx
+# OPENAI_API_URL=https://api.openai.com/v1
+
+# Groq Configuration (if PROVIDER=groq)
+# GROQ_API_KEY=gsk_xxx
+# GROQ_API_URL=https://api.groq.com/v1
+
+# AWS Bedrock Configuration (if PROVIDER=bedrock)
+# AWS_ACCESS_KEY_ID=AKIA...
+# AWS_SECRET_ACCESS_KEY=xxx
+# AWS_REGION=us-east-1
+# BEDROCK_API_URL=https://bedrock-runtime.{region}.amazonaws.com/v1
+
+# OpenWebUI Configuration (if PROVIDER=openwebui)
+# OPENWEBUI_API_URL=http://localhost:5000
+# OPENWEBUI_API_KEY=sk-xxx
 
 # LLM Parameters
 TEMPERATURE=0.7
@@ -133,7 +183,6 @@ OUTPUT_PATH=project-doc
 # 5. deepseek-r1:7b - Strong general code understanding
 # 6. llama3.1:8b - Meta's latest model, high quality
 # 7. mixtral-8x7b - Most comprehensive analysis but slowest option
-
 `;
 
 /**

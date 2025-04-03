@@ -115,7 +115,7 @@ async function generateMarkdown(): Promise<Record<string, string>> {
 		// Build context for this specific section
 		const context = await contextManager.buildSectionContext(section.key);
 
-		// Generate content using LLM
+		// Generate content using LLM with section-specific prompt
 		section.content = await llmProvider.generateContent(context, section.key);
 
 		// Store in our content dictionary

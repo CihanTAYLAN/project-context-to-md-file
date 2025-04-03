@@ -334,7 +334,7 @@ export class VectorStore {
 }
 
 /**
- * Context manager for building effective context for LLMs
+ * Manager for collecting and building context for the LLM
  */
 export class ContextManager {
 	private vectorStore: VectorStore;
@@ -351,7 +351,7 @@ export class ContextManager {
 	 * Initialize the context manager
 	 */
 	async initialize(): Promise<boolean> {
-		return this.vectorStore.initialize();
+		return await this.vectorStore.initialize();
 	}
 
 	/**
@@ -369,11 +369,10 @@ export class ContextManager {
 	}
 
 	/**
-	 * Get file statistics
+	 * Get project statistics formatted as a string
 	 */
 	async getProjectStats(): Promise<string> {
 		const stats = await this.vectorStore.getStats();
-
 		return `
 Project Statistics:
 - Total Files: ${stats.totalFiles}
@@ -386,65 +385,78 @@ Project Statistics:
 	}
 
 	/**
-	 * Build section-specific context
+	 * Build the context for a specific documentation section
 	 */
 	async buildSectionContext(sectionKey: string): Promise<string> {
-		console.log(chalk.blue(`Building context for section: ${sectionKey}...`));
+		try {
+			// Get all files from the vector store
+			const allFiles = await this.vectorStore.getAllFiles();
 
-		// Get all files from vector store
-		const files = await this.vectorStore.getAllFiles();
+			// Get initial context budget
+			const tokenBudget = Math.floor(this.totalTokenBudget * 0.9); // Keep 10% reserve
+			let usedTokens = 0;
 
-		// Calculate tokens for each file
-		const filesWithTokens = files.map((file) => ({
-			...file,
-			tokens: this.estimateTokens(file.content),
-		}));
+			// Get project stats
+			const stats = await this.getProjectStats();
+			usedTokens += this.estimateTokens(stats);
 
-		// Sort files to prioritize important ones based on section
-		const sortedFiles = this.prioritizeFilesForSection(filesWithTokens, sectionKey);
+			// Add section-specific header
+			const header = this.buildSectionHeader(sectionKey);
+			usedTokens += this.estimateTokens(header);
 
-		// Build section-specific header
-		let context = this.buildSectionHeader(sectionKey);
-		let totalTokens = this.estimateTokens(context);
-		const includedFiles: string[] = [];
+			// Add section-specific footer
+			const footer = this.buildSectionFooter(sectionKey);
+			usedTokens += this.estimateTokens(footer);
 
-		// Add relevant files for this section
-		for (const file of sortedFiles) {
-			// Check if adding this file would exceed our token budget
-			const contentTokens = file.tokens;
-			const headerTokens = this.estimateTokens(`\n### FILE: ${file.path}\n\`\`\`\n`);
-			const footerTokens = this.estimateTokens(`\n\`\`\`\n`);
+			// Prioritize files based on section type
+			const prioritizedFiles = this.prioritizeFilesForSection(allFiles, sectionKey);
 
-			if (totalTokens + contentTokens + headerTokens + footerTokens > this.totalTokenBudget) {
-				// Skip if it would exceed the budget
-				continue;
+			// Calculate remaining token budget
+			const remainingBudget = tokenBudget - usedTokens;
+
+			// Build context with prioritized files
+			let fileContents = "";
+			let fileCount = 0;
+			const maxFiles = this.getMaxFilesForSection(sectionKey);
+
+			for (const file of prioritizedFiles) {
+				if (fileCount >= maxFiles) break;
+
+				const fileContent = `
+FILE: ${file.path}
+---
+${file.content}
+---
+
+`;
+
+				const fileTokens = this.estimateTokens(fileContent);
+
+				if (usedTokens + fileTokens <= tokenBudget) {
+					fileContents += fileContent;
+					usedTokens += fileTokens;
+					fileCount++;
+				} else {
+					break;
+				}
 			}
 
-			// Add the file to our context
-			context += `\n### FILE: ${file.path}\n\`\`\`\n`;
-			context += file.content;
-			context += `\n\`\`\`\n`;
+			// Assemble final context
+			const context = `${header}
 
-			// Update token count and track included files
-			totalTokens += contentTokens + headerTokens + footerTokens;
-			includedFiles.push(file.path);
+${stats}
 
-			// Break if we've included enough files for this section
-			if (includedFiles.length >= this.getMaxFilesForSection(sectionKey)) {
-				break;
-			}
+${fileContents}
+
+${footer}`;
+
+			console.log(chalk.blue(`Built context for section '${sectionKey}' (${usedTokens} estimated tokens, ${fileCount} files included)`));
+
+			return context;
+		} catch (error) {
+			console.error(chalk.red(`Error building section context for '${sectionKey}':`), error);
+			return `Error building context: ${error}`;
 		}
-
-		// Add statistics about the project
-		context += `\n## PROJECT STATISTICS\n`;
-		context += await this.getProjectStats();
-
-		// Add section-specific footer
-		context += this.buildSectionFooter(sectionKey);
-
-		console.log(chalk.green(`Built context for section ${sectionKey} with ${includedFiles.length} files, approximately ${totalTokens} tokens`));
-
-		return context;
 	}
 
 	/**
@@ -463,7 +475,21 @@ Project Statistics:
 					if (b.path.endsWith("README.md")) return 1;
 					if (a.path.endsWith("package.json")) return -1;
 					if (b.path.endsWith("package.json")) return 1;
-					return a.tokens - b.tokens;
+					if (a.path.includes("/src/index")) return -1;
+					if (b.path.includes("/src/index")) return 1;
+					return 0;
+				});
+
+			case "technology":
+				return sortedFiles.sort((a, b) => {
+					// Prioritize package files and main entry points
+					if (a.path.endsWith("package.json")) return -1;
+					if (b.path.endsWith("package.json")) return 1;
+					if (a.path.endsWith("tsconfig.json")) return -1;
+					if (b.path.endsWith("tsconfig.json")) return 1;
+					if (a.path.includes("/src/")) return -1;
+					if (b.path.includes("/src/")) return 1;
+					return 0;
 				});
 
 			case "architecture":
@@ -473,66 +499,104 @@ Project Statistics:
 					const isBMainFile = b.path.includes("/src/") && !b.path.includes("test");
 					if (isAMainFile && !isBMainFile) return -1;
 					if (!isAMainFile && isBMainFile) return 1;
-					return a.tokens - b.tokens;
+					if (a.path.includes("index")) return -1;
+					if (b.path.includes("index")) return 1;
+					return 0;
 				});
 
-			case "setup":
+			case "dataModel":
 				return sortedFiles.sort((a, b) => {
-					// Prioritize config and setup files
-					if (a.path.endsWith("package.json")) return -1;
-					if (b.path.endsWith("package.json")) return 1;
-					if (a.path.endsWith(".env.example")) return -1;
-					if (b.path.endsWith(".env.example")) return 1;
-					if (a.path.includes("config")) return -1;
-					if (b.path.includes("config")) return 1;
-					return a.tokens - b.tokens;
+					// Prioritize data model related files
+					if (a.path.includes("model") || a.path.includes("schema") || a.path.includes("entity")) return -1;
+					if (b.path.includes("model") || b.path.includes("schema") || b.path.includes("entity")) return 1;
+					if (a.path.includes("db") || a.path.includes("data")) return -1;
+					if (b.path.includes("db") || b.path.includes("data")) return 1;
+					if (a.path.includes("vectorstore")) return -1;
+					if (b.path.includes("vectorstore")) return 1;
+					return 0;
 				});
 
-			case "apis":
+			case "api":
 				return sortedFiles.sort((a, b) => {
 					// Prioritize API-related files
 					if (a.path.includes("api") || a.path.includes("route")) return -1;
 					if (b.path.includes("api") || b.path.includes("route")) return 1;
-					return a.tokens - b.tokens;
+					if (a.path.includes("controller") || a.path.includes("handler")) return -1;
+					if (b.path.includes("controller") || b.path.includes("handler")) return 1;
+					if (a.path.includes("fetch") || a.path.includes("request")) return -1;
+					if (b.path.includes("fetch") || b.path.includes("request")) return 1;
+					return 0;
 				});
 
-			case "components":
+			case "security":
 				return sortedFiles.sort((a, b) => {
-					// Prioritize component files
-					if (a.path.includes("component") || a.path.includes("ui")) return -1;
-					if (b.path.includes("component") || b.path.includes("ui")) return 1;
-					return a.tokens - b.tokens;
+					// Prioritize security-related files
+					if (a.path.includes("auth") || a.path.includes("security")) return -1;
+					if (b.path.includes("auth") || b.path.includes("security")) return 1;
+					if (a.path.includes("encrypt") || a.path.includes("crypt")) return -1;
+					if (b.path.includes("encrypt") || b.path.includes("crypt")) return 1;
+					if (a.path.includes("validate") || a.path.includes("sanitize")) return -1;
+					if (b.path.includes("validate") || b.path.includes("sanitize")) return 1;
+					return 0;
 				});
 
-			case "configuration":
+			case "codeStandards":
 				return sortedFiles.sort((a, b) => {
-					// Prioritize configuration files
-					if (a.path.includes("config") || a.path.endsWith(".env.example")) return -1;
-					if (b.path.includes("config") || b.path.endsWith(".env.example")) return 1;
-					return a.tokens - b.tokens;
+					// Prioritize structure and core files
+					if (a.path.includes(".eslintrc") || a.path.includes("prettier")) return -1;
+					if (b.path.includes(".eslintrc") || b.path.includes("prettier")) return 1;
+					if (a.path.includes("tsconfig")) return -1;
+					if (b.path.includes("tsconfig")) return 1;
+					if (a.path.endsWith(".ts") || a.path.endsWith(".js")) return -1;
+					if (b.path.endsWith(".ts") || b.path.endsWith(".js")) return 1;
+					return 0;
 				});
 
-			case "development":
+			case "deployment":
 				return sortedFiles.sort((a, b) => {
-					// Prioritize development-related files
-					if (a.path.endsWith(".gitignore")) return -1;
-					if (b.path.endsWith(".gitignore")) return 1;
-					if (a.path.includes("test") || a.path.includes("dev")) return -1;
-					if (b.path.includes("test") || b.path.includes("dev")) return 1;
-					return a.tokens - b.tokens;
+					// Prioritize deployment-related files
+					if (a.path.includes("Dockerfile") || a.path.includes("docker-compose")) return -1;
+					if (b.path.includes("Dockerfile") || b.path.includes("docker-compose")) return 1;
+					if (a.path.includes(".github/workflows") || a.path.includes("gitlab-ci")) return -1;
+					if (b.path.includes(".github/workflows") || b.path.includes("gitlab-ci")) return 1;
+					if (a.path.includes("deploy") || a.path.includes("build")) return -1;
+					if (b.path.includes("deploy") || b.path.includes("build")) return 1;
+					return 0;
 				});
 
-			case "troubleshooting":
+			case "userGuide":
 				return sortedFiles.sort((a, b) => {
-					// Prioritize error handling and logging files
-					if (a.path.includes("error") || a.path.includes("log")) return -1;
-					if (b.path.includes("error") || b.path.includes("log")) return 1;
-					return a.tokens - b.tokens;
+					// Prioritize documentation and example files
+					if (a.path.endsWith("README.md")) return -1;
+					if (b.path.endsWith("README.md")) return 1;
+					if (a.path.includes("doc") || a.path.includes("example")) return -1;
+					if (b.path.includes("doc") || b.path.includes("example")) return 1;
+					if (a.path.includes("bin") || a.path.includes("cli")) return -1;
+					if (b.path.includes("bin") || b.path.includes("cli")) return 1;
+					if (a.path.includes("src/index")) return -1;
+					if (b.path.includes("src/index")) return 1;
+					return 0;
+				});
+
+			case "roadmap":
+				return sortedFiles.sort((a, b) => {
+					// Prioritize strategic and planning files
+					if (a.path.endsWith("README.md")) return -1;
+					if (b.path.endsWith("README.md")) return 1;
+					if (a.path.includes("TODO") || a.path.includes("ROADMAP")) return -1;
+					if (b.path.includes("TODO") || b.path.includes("ROADMAP")) return 1;
+					if (a.path.includes("CHANGELOG") || a.path.includes("CONTRIBUTING")) return -1;
+					if (b.path.includes("CHANGELOG") || b.path.includes("CONTRIBUTING")) return 1;
+					return 0;
 				});
 
 			default:
 				// Default sorting: prioritize smaller files to include more
-				return sortedFiles.sort((a, b) => a.tokens - b.tokens);
+				return sortedFiles.sort((a, b) => {
+					const sizeA = a.content ? a.content.length : 0;
+					const sizeB = b.content ? b.content.length : 0;
+					return sizeA - sizeB;
+				});
 		}
 	}
 
@@ -543,164 +607,319 @@ Project Statistics:
 		// Different file limits based on section
 		switch (sectionKey) {
 			case "overview":
-				return 5; // Overview needs fewer files
+				return 30; // Overview needs fewer files
+			case "technology":
+				return 40; // Technology stack requires various files
 			case "architecture":
-				return 10; // Architecture needs more detail
-			case "setup":
-				return 6;
-			case "apis":
-				return 8;
-			case "components":
-				return 10;
-			case "configuration":
-				return 5;
-			case "development":
-				return 6;
-			case "troubleshooting":
-				return 5;
+				return 50; // Architecture needs detailed files
+			case "dataModel":
+				return 30; // Data model uses fewer, more specific files
+			case "api":
+				return 50; // API design needs endpoint examples
+			case "security":
+				return 25; // Security aspects from key files
+			case "codeStandards":
+				return 40; // Code standards from multiple examples
+			case "deployment":
+				return 30; // Deployment from config and setup files
+			case "userGuide":
+				return 40; // User guide needs examples and code
+			case "roadmap":
+				return 20; // Roadmap can use fewer files
 			default:
-				return 8;
+				return 30; // Default reasonable number
 		}
 	}
 
 	/**
-	 * Build section-specific header
+	 * Build section-specific header with instructions
 	 */
 	private buildSectionHeader(sectionKey: string): string {
-		// Base header for all sections
-		let header = `# PROJECT DOCUMENTATION - ${sectionKey.toUpperCase()} SECTION\n\n`;
-		header += `You are an expert programmer and technical documentation specialist. Your task is to create detailed documentation for the ${sectionKey} section of this project.\n\n`;
+		// Base header structure
+		let header = `# ${sectionKey.toUpperCase()} SECTION DOCUMENTATION\n\n`;
 
-		// Important output formatting instructions to prevent model responses like "Sure!"
-		header += `## IMPORTANT OUTPUT INSTRUCTIONS\n`;
-		header += `- DO NOT include phrases like "Sure!", "Here is", "Below is" at the beginning\n`;
-		header += `- DO NOT include markdown fences (\`\`\`markdown) at the beginning or end\n`;
-		header += `- DO NOT apologize or add explanations about the documentation\n`;
-		header += `- Output should start directly with the document content (like a title)\n`;
-		header += `- Use proper Markdown formatting without additional wrappers\n\n`;
-
-		// Section-specific instructions
+		// Section specific instructions
 		switch (sectionKey) {
 			case "overview":
-				header += `## TASK\n`;
-				header += `Create a comprehensive overview of this project that explains its purpose, main features, and overall architecture.\n\n`;
-				header += `## OUTPUT FORMAT\n`;
-				header += `- Start with a clear project title and introduction\n`;
-				header += `- Explain the project's purpose and goals\n`;
-				header += `- Describe the key features and capabilities\n`;
-				header += `- Give a high-level overview of the architecture\n`;
-				header += `- Include a technologies/stack overview\n`;
+				header += `This section should provide a comprehensive overview of the project, including:
+- Core purpose and vision: Why was it developed, what needs does it address?
+- Main features and capabilities: Detailed and categorized
+- Problems solved and value proposition for users
+- Target audience and use cases
+- General overview of architectural approach (visual or diagram)
+- Summary of core technology stack
+- Project development principles and approaches
+- Typical usage flows with important code examples
+
+When creating the documentation, emphasize the project's advantages and features objectively while maintaining technical accuracy.
+Create a complete overview based on code and comment analysis.
+`;
+				break;
+
+			case "technology":
+				header += `This section should detail all technologies used in the project with these categories:
+- Programming languages and versions
+- Frontend technologies (frameworks, libraries, UI tools)
+- Backend technologies (servers, frameworks, libraries)
+- Data storage solutions (databases, ORM/ODM, data access layers)
+- API technologies (REST, GraphQL, WebSocket, etc.)
+- Authentication and security libraries
+- Testing tools and frameworks
+- Build and packaging tools
+- Deployment and DevOps tools
+- Project management tools and dependencies
+
+For each technology:
+- Explain its purpose in the project
+- Version information
+- Where and how it's used
+- Important configuration details
+- Reasons for selection over alternatives (if any)
+
+Create an organized technology map using Markdown tables, lists, and code examples.
+`;
 				break;
 
 			case "architecture":
-				header += `## TASK\n`;
-				header += `Create detailed documentation of the project's architecture, including major components, data flow, and design patterns.\n\n`;
-				header += `## OUTPUT FORMAT\n`;
-				header += `- Start with an architectural overview diagram (described in text)\n`;
-				header += `- Detail each major component and its responsibility\n`;
-				header += `- Explain how data flows through the system\n`;
-				header += `- Describe key design patterns and architectural decisions\n`;
-				header += `- Explain any scaling or performance considerations\n`;
+				header += `This section should define the system architecture in detail with these headings:
+- General architectural approach (monolithic, microservices, layered, etc.)
+- System components and their responsibilities
+- Component interaction and data flow (as ASCII diagram)
+- Communication between subsystems and modules
+- Layered architecture details (if any)
+- Database schema and data flow diagram
+- Implementation of architectural patterns and principles (SOLID, DRY, etc.)
+- Interfaces, abstractions, and dependency management
+- Scalability strategies and approaches
+- Fault tolerance and resilience measures
+- Performance optimization approaches
+- Extensibility and flexibility features
+
+Show how the architectural approach is implemented with appropriate code examples and diagrams.
+Explain responsibilities of each component and how they interact with other components.
+`;
 				break;
 
-			case "setup":
-				header += `## TASK\n`;
-				header += `Create a detailed setup and installation guide for this project.\n\n`;
-				header += `## OUTPUT FORMAT\n`;
-				header += `- List all prerequisites and dependencies\n`;
-				header += `- Provide step-by-step installation instructions\n`;
-				header += `- Include configuration instructions\n`;
-				header += `- Explain how to run the project locally\n`;
-				header += `- Include troubleshooting tips for common setup issues\n`;
+			case "dataModel":
+				header += `This section should document the project's data model with these details:
+- Data model overview and enterprise data model approach
+- Database technologies used and versions
+- Main data entities and their attributes (in table format)
+- Relationships between data entities (one-to-one, one-to-many, etc.)
+- Schema diagram (ASCII or textual representation)
+- Key and indexing strategies
+- Data validation and integrity rules
+- Data access layer and ORM usage
+- Data migration and version management strategies
+- Caching mechanisms and strategies
+- Data security and access control approaches
+- Example data access and transaction codes
+
+Create tables showing field names, data types, descriptions, constraints, and relationships for each data entity.
+Show data access patterns and typical query examples.
+`;
 				break;
 
-			case "apis":
-				header += `## TASK\n`;
-				header += `Document all APIs in this project, their endpoints, parameters, and responses.\n\n`;
-				header += `## OUTPUT FORMAT\n`;
-				header += `- Organize APIs by logical groups\n`;
-				header += `- For each API endpoint, document:\n`;
-				header += `  - HTTP method and URL\n`;
-				header += `  - Request parameters and body format\n`;
-				header += `  - Response format with examples\n`;
-				header += `  - Error codes and handling\n`;
-				header += `- Include authentication requirements if applicable\n`;
+			case "api":
+				header += `This section should define the project's API design with these headings:
+- API overview and purpose
+- Command Line Interface (CLI) commands and parameters
+  - Detailed description and usage examples for each command
+  - Parameter details (type, default value, required/optional)
+- Internal APIs (classes, functions, modules)
+  - Description and parameters for each function/method
+  - Return values and examples
+- Error handling mechanisms
+  - Error types and codes
+  - Error responses and messages
+- API usage examples
+  - Step-by-step examples for basic scenarios
+  - Advanced usage scenarios
+
+DO NOT OUTPUT IN JSON FORMAT OR RAW CONFIG FILE OUTPUT.
+Instead, document all APIs in Markdown format using organized headings and subheadings.
+Use descriptive tables with example usage for CLI commands and internal APIs.
+`;
 				break;
 
-			case "components":
-				header += `## TASK\n`;
-				header += `Document the main components of this project, their purpose, and how they interact.\n\n`;
-				header += `## OUTPUT FORMAT\n`;
-				header += `- List major components with a brief description\n`;
-				header += `- For each component, document:\n`;
-				header += `  - Purpose and responsibility\n`;
-				header += `  - Key methods/functions\n`;
-				header += `  - Interactions with other components\n`;
-				header += `  - Usage examples where appropriate\n`;
+			case "security":
+				header += `This section should document the project's security features with these headings:
+- Authentication and Authorization
+  - API keys and credentials management
+  - Session/token management (if any)
+- Input validation and sanitization
+  - User input validation
+  - XSS, command injection prevention
+- Sensitive data handling
+  - API keys, credentials protection
+  - Secure environment variables usage
+- File system security
+  - File access control
+  - Secure file operations
+- Security logging
+  - Error and security event logging
+  - Log information protection
+- Security best practices
+  - Security checks in code
+  - Potential security vulnerabilities and measures
+
+DO NOT OUTPUT IN JSON FORMAT OR RAW CONFIG FILE OUTPUT.
+Instead, document security features and measures with clear and organized headings.
+Show how each security measure is implemented with code examples and explanations.
+`;
 				break;
 
-			case "configuration":
-				header += `## TASK\n`;
-				header += `Document all configuration options and settings for this project.\n\n`;
-				header += `## OUTPUT FORMAT\n`;
-				header += `- List all configuration files and their purpose\n`;
-				header += `- Document all environment variables\n`;
-				header += `- Explain configuration options and their default values\n`;
-				header += `- Provide examples for different environments (dev, prod, etc.)\n`;
-				header += `- Include best practices for sensitive configuration\n`;
+			case "codeStandards":
+				header += `This section should document the code standards applied in the project with these headings:
+- Coding style rules and formatting
+- File and directory organization structure
+- Naming conventions (variables, functions, classes, etc.)
+- Code documentation and comment writing standards
+- Architectural principles and design patterns:
+  - SOLID principles implementation
+  - DRY (Don't Repeat Yourself) principle approaches
+  - KISS (Keep It Simple, Stupid) principle approaches
+  - Dependency Injection usage
+  - Other design patterns (Factory, Singleton, Observer, etc.)
+- Error handling and logging standards
+- Asynchronous code writing approaches
+- Testing standards and methodologies:
+  - Unit testing approaches
+  - Integration testing strategies
+  - E2E testing approaches
+  - Test coverage goals
+- Code review process and criteria
+- Performance optimization techniques
+
+Show how these standards are applied with concrete code examples and explanations.
+Highlight best practices and areas requiring attention.
+`;
 				break;
 
-			case "development":
-				header += `## TASK\n`;
-				header += `Create a development guide for this project, including contribution guidelines, code standards, and workflow.\n\n`;
-				header += `## OUTPUT FORMAT\n`;
-				header += `- Outline the development workflow\n`;
-				header += `- Document coding standards and conventions\n`;
-				header += `- Explain the testing approach\n`;
-				header += `- Detail the CI/CD process if applicable\n`;
-				header += `- Include guidelines for contributing\n`;
+			case "deployment":
+				header += `This section should document the project's deployment and operations infrastructure with these headings:
+- Development and deployment environments
+  - System requirements
+  - Supported platforms
+- Installation and configuration
+  - Step-by-step installation instructions
+  - Required dependencies
+- Packaging and publishing process
+  - npm/yarn packaging steps
+  - Package configuration
+- Build and configuration
+  - Build scripts and commands
+  - Configuration files
+- Version management
+  - Versioning strategy
+  - Update procedures
+- Environment variables and configuration
+  - Required environmental variables
+  - Configuration options
+- Monitoring and debugging
+  - Logs and error tracking
+  - Performance monitoring
+
+DO NOT OUTPUT IN JSON FORMAT OR RAW CONFIG FILE OUTPUT.
+Instead, document the deployment process with clear steps, code examples, and command line examples.
+Focus especially on build, prepare, and other command scripts in package.json.
+`;
 				break;
 
-			case "troubleshooting":
-				header += `## TASK\n`;
-				header += `Create a troubleshooting guide for common issues in this project.\n\n`;
-				header += `## OUTPUT FORMAT\n`;
-				header += `- List common issues by category\n`;
-				header += `- For each issue, document:\n`;
-				header += `  - Symptoms and error messages\n`;
-				header += `  - Potential causes\n`;
-				header += `  - Step-by-step solutions\n`;
-				header += `- Include debugging techniques\n`;
-				header += `- Add performance optimization tips if relevant\n`;
+			case "userGuide":
+				header += `This section should create a comprehensive guide for project usage with these headings:
+- Installation and running:
+  - Prerequisites and system requirements
+  - Step-by-step installation instructions for different operating systems
+  - Dependencies installation
+  - First run and configuration
+- Basic usage:
+  - Getting started steps and first use
+  - Basic commands and options
+  - Interface navigation (if any)
+- Advanced usage:
+  - Customization options
+  - Advanced commands and parameters
+  - Performance optimization
+- Configuration:
+  - Configuration files and formats
+  - Environment variables
+  - Options and their effects
+- Common problems and solutions:
+  - Known issues and workarounds
+  - Troubleshooting steps
+  - Help resources
+- Examples and scenarios:
+  - Real-world usage examples
+  - Best practices
+  - Workflow examples
+
+Use command line examples, screenshots, code snippets, and step-by-step instructions to help users effectively use the project.
+Help users avoid potential pitfalls with notes and tips.
+`;
+				break;
+
+			case "roadmap":
+				header += `This section should document the project's future vision and development plan with these headings:
+- Short-term goals (3-6 months):
+  - Priority features and improvements
+  - Known bugs and solution plans
+  - Small-scale improvements
+- Medium-term goals (6-12 months):
+  - Main feature developments
+  - Architectural changes
+  - Performance improvements
+- Long-term vision (1+ year):
+  - Strategic goals
+  - Large-scale changes
+  - New technology integrations
+- Planned technical improvements:
+  - Code refactoring and technical debt items
+  - Architectural improvements
+  - Increasing test coverage
+  - Performance and scalability improvements
+- Planned features and improvements (priority and scope for each)
+- Research and development areas
+- Community contribution opportunities
+- Feedback and feature request process
+
+Explain the thought process behind the roadmap by adding logical reasons and implementation plans for each item.
+Create realistic expectations by indicating priority levels and estimated timeframes.
+`;
 				break;
 
 			default:
-				header += `## TASK\n`;
-				header += `Create comprehensive documentation for this section of the project.\n\n`;
-				header += `## OUTPUT FORMAT\n`;
-				header += `- Use clear, organized headings and subheadings\n`;
-				header += `- Include relevant code examples when helpful\n`;
-				header += `- Be concise but thorough in explanations\n`;
-				header += `- Write for developers who need to understand or maintain this code\n`;
+				header += `Provide comprehensive documentation for this section based on the code context.
+Organize information logically with clear headings and examples where appropriate.
+`;
 		}
 
-		header += `\n## PROJECT INFORMATION\nProject Directory: ${process.cwd()}\n\n`;
 		return header;
 	}
 
 	/**
-	 * Build section-specific footer
+	 * Build section-specific footer with formatting instructions
 	 */
 	private buildSectionFooter(sectionKey: string): string {
-		return (
-			`\n## FINAL NOTES\n` +
-			`1. Focus on clarity, accuracy, and completeness for the ${sectionKey} section\n` +
-			`2. Use proper markdown formatting throughout\n` +
-			`3. Ensure information is relevant and helpful to developers\n` +
-			`4. Format your response as a complete markdown document for the ${sectionKey} section\n` +
-			`5. Remember to NEVER include phrases like "Sure!", "Here is", etc. at the beginning\n` +
-			`6. Output ONLY the content to be saved as a Markdown file\n`
-		);
+		return `
+## FORMATTING INSTRUCTIONS
+
+1. Apply Markdown formatting rules meticulously
+2. Organize heading levels hierarchically and logically (\`#\`,\`##\`,\`###\`)
+3. Use code blocks with appropriate syntax highlighting for code examples
+4. Use tables for data presentation (especially in API and data model sections)
+5. Use lists and sublists in an organized and consistent manner
+6. Add ASCII diagrams or visual representations for visual explanations
+7. Be consistent with terminology and technical terms
+8. Use concise expressions while including necessary technical details
+9. Start with an introductory paragraph appropriate to the section's purpose
+10. Organize the section's main content comprehensively with subheadings
+11. Add notes and tips to highlight important points
+12. Indicate important warnings or limitations if any
+13. Conclude with a brief summary or evaluation at the end of the section
+
+Remember that this document will be used as a standalone Markdown file as part of a larger document set. Format it consistently and professionally.
+`;
 	}
 
 	/**
@@ -709,190 +928,5 @@ Project Statistics:
 	private estimateTokens(text: string): number {
 		// GPT models use ~4 chars per token on average
 		return Math.ceil(text.length / 4);
-	}
-
-	/**
-	 * Build context for initial generation
-	 */
-	async buildInitialContext(): Promise<string> {
-		console.log(chalk.blue(`Building initial context with token budget of ${this.totalTokenBudget}...`));
-
-		// Get all files from vector store
-		const files = await this.vectorStore.getAllFiles();
-
-		// Calculate tokens for each file
-		const filesWithTokens = files.map((file) => ({
-			...file,
-			tokens: this.estimateTokens(file.content),
-		}));
-
-		// Sort files to prioritize important ones
-		const sortedFiles = filesWithTokens.sort((a, b) => {
-			const aPath = a.path;
-			const bPath = b.path;
-
-			// Prioritize key configuration files
-			const configFiles = ["package.json", "tsconfig.json", "README.md", ".gitignore"];
-			const aIsConfig = configFiles.some((name) => aPath.endsWith(name));
-			const bIsConfig = configFiles.some((name) => bPath.endsWith(name));
-
-			if (aIsConfig && !bIsConfig) return -1;
-			if (!aIsConfig && bIsConfig) return 1;
-
-			// Prioritize code files over others
-			const codeExtensions = [".js", ".ts", ".jsx", ".tsx", ".py", ".go", ".java"];
-			const aIsCode = codeExtensions.some((ext) => aPath.endsWith(ext));
-			const bIsCode = codeExtensions.some((ext) => bPath.endsWith(ext));
-
-			if (aIsCode && !bIsCode) return -1;
-			if (!aIsCode && bIsCode) return 1;
-
-			// Prioritize smaller files to include more files
-			return a.tokens - b.tokens;
-		});
-
-		// Build context with token budget
-		let context = `# PROJECT DOCUMENTATION SYSTEM PROMPT\n\n`;
-		context += `You are an expert programmer and technical documentation specialist. Your task is to create comprehensive documentation for this project.\n\n`;
-		context += `## TASK\n`;
-		context += `Create detailed, well-structured documentation that covers the project's purpose, architecture, components, and usage instructions.\n\n`;
-		context += `## OUTPUT FORMAT\n`;
-		context += `- Start with a clear project title and brief introduction\n`;
-		context += `- Include a table of contents\n`;
-		context += `- Organize information into logical sections with proper headings\n`;
-		context += `- Use markdown formatting for readability\n`;
-		context += `- Include code examples where appropriate\n`;
-		context += `- End with setup/usage instructions\n\n`;
-		context += `## PROJECT INFORMATION\nProject Directory: ${process.cwd()}\n\n`;
-
-		let totalTokens = this.estimateTokens(context);
-		const includedFiles: string[] = [];
-
-		// First add key files that should always be included if possible
-		const keyFiles = ["README.md", "package.json", "tsconfig.json"];
-		for (const keyFileName of keyFiles) {
-			const keyFile = sortedFiles.find((file) => file.path.endsWith(keyFileName));
-			if (keyFile) {
-				const contentTokens = keyFile.tokens;
-				const headerTokens = this.estimateTokens(`\n### FILE: ${keyFile.path}\n\`\`\`\n`);
-				const footerTokens = this.estimateTokens(`\n\`\`\`\n`);
-
-				if (totalTokens + contentTokens + headerTokens + footerTokens <= this.totalTokenBudget) {
-					context += `\n### FILE: ${keyFile.path}\n\`\`\`\n`;
-					context += keyFile.content;
-					context += `\n\`\`\`\n`;
-
-					totalTokens += contentTokens + headerTokens + footerTokens;
-					includedFiles.push(keyFile.path);
-
-					// Remove from sorted files to avoid duplication
-					sortedFiles.splice(sortedFiles.indexOf(keyFile), 1);
-				}
-			}
-		}
-
-		// Add source code files
-		for (const file of sortedFiles) {
-			// Skip if already included as a key file
-			if (includedFiles.includes(file.path)) continue;
-
-			// Check if adding this file would exceed our token budget
-			const contentTokens = file.tokens;
-			const headerTokens = this.estimateTokens(`\n### FILE: ${file.path}\n\`\`\`\n`);
-			const footerTokens = this.estimateTokens(`\n\`\`\`\n`);
-
-			if (totalTokens + contentTokens + headerTokens + footerTokens > this.totalTokenBudget) {
-				// Skip if it would exceed the budget
-				continue;
-			}
-
-			// Add the file to our context
-			context += `\n### FILE: ${file.path}\n\`\`\`\n`;
-			context += file.content;
-			context += `\n\`\`\`\n`;
-
-			// Update token count and track included files
-			totalTokens += contentTokens + headerTokens + footerTokens;
-			includedFiles.push(file.path);
-		}
-
-		// Add statistics about the project
-		context += `\n## PROJECT STATISTICS\n`;
-		context += await this.getProjectStats();
-
-		// Add information about skipped files
-		const skippedFiles = files.length - includedFiles.length;
-		if (skippedFiles > 0) {
-			context += `\n### Excluded Files\n${skippedFiles} files were not included due to token limitations.\n`;
-		}
-
-		// Add final instructions
-		context += `\n## FINAL NOTES\n`;
-		context += `1. Focus on clarity, organization, and technical accuracy\n`;
-		context += `2. Target audience: developers who need to understand or contribute to the project\n`;
-		context += `3. Structure documentation to be both comprehensive and easy to navigate\n`;
-
-		console.log(chalk.green(`Built context with ${includedFiles.length} files, approximately ${totalTokens} tokens`));
-
-		return context;
-	}
-
-	/**
-	 * Build context for incremental updates
-	 */
-	async buildIncrementalContext(existingContent: string): Promise<string> {
-		console.log(chalk.blue("Building incremental context for update..."));
-
-		// Get project stats
-		const stats = await this.getProjectStats();
-
-		// Get the most relevant files for the current context (to provide better updates)
-		const relevantFiles = await this.vectorStore.getSimilarFiles(existingContent, 5);
-
-		// Build incremental context
-		let context = `# PROJECT DOCUMENTATION UPDATE SYSTEM PROMPT\n\n`;
-		context += `You are an expert programmer and technical documentation specialist. Your task is to update the existing documentation for this project.\n\n`;
-
-		context += `## TASK\n`;
-		context += `Review the existing documentation and update it with any new information. Maintain the original structure and format while enhancing or correcting content as needed.\n\n`;
-
-		context += `## OUTPUT FORMAT\n`;
-		context += `- Preserve the original document structure, including headings and organization\n`;
-		context += `- Update technical details, code examples, and explanations to reflect current state\n`;
-		context += `- Maintain consistent markdown formatting and style throughout\n`;
-		context += `- Ensure the document remains comprehensive and accurate\n\n`;
-
-		context += `## EXISTING DOCUMENTATION (EXCERPT)\n\n`;
-		context += existingContent.substring(0, 1500) + "...\n\n";
-
-		context += `## PROJECT STATISTICS\n`;
-		context += stats + "\n\n";
-
-		// Add relevant files for context
-		context += `## RELEVANT FILES FOR CONTEXT\n`;
-		for (const file of relevantFiles) {
-			const relativePath = path.relative(process.cwd(), file.path);
-			context += `\n### FILE: ${relativePath}\n\`\`\`\n`;
-
-			// Truncate very large files
-			const maxChars = 3000;
-			if (file.content.length > maxChars) {
-				context += file.content.substring(0, maxChars) + "...\n";
-			} else {
-				context += file.content;
-			}
-
-			context += `\n\`\`\`\n`;
-		}
-
-		// Add final instructions
-		context += `\n## UPDATE GUIDELINES\n`;
-		context += `1. Keep what works in the existing documentation\n`;
-		context += `2. Update information that is outdated or incorrect\n`;
-		context += `3. Add any missing details about new features or changes\n`;
-		context += `4. Ensure the document flows logically and maintains technical accuracy\n`;
-		context += `5. Output the complete updated documentation\n`;
-
-		return context;
 	}
 }
