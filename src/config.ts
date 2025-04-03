@@ -39,7 +39,6 @@ const CONFIG = {
 	awsAccessKeyId: process.env.AWS_ACCESS_KEY_ID || "",
 	awsSecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || "",
 	awsRegion: process.env.AWS_REGION || "us-east-1",
-	bedrockApiUrl: process.env.BEDROCK_API_URL || "",
 
 	// OpenWebUI Configuration
 	openwebuiApiKey: process.env.OPENWEBUI_API_KEY || "",
@@ -69,46 +68,46 @@ const CONFIG = {
 			title: "System Architecture",
 			description: "High-level architecture diagram, Backend & frontend structure, Monolithic vs. microservices approach and reasoning, Scalability and performance optimizations",
 		},
-		dataModel: {
-			filename: "03-Data-Model.md",
-			title: "Data Model & Structure",
-			description: "Database schema, Key tables and relationships, Caching & indexing strategies",
-		},
-		apiIntegrations: {
-			filename: "04-API-Design-Integrations.md",
-			title: "API Design & Integrations",
-			description:
-				"API design principles, RESTful API endpoints, API documentation, Integration strategies.REST/gRPC/WebSocket endpoints with descriptions, Authentication & authorization (JWT, OAuth, API Key, etc.), Third-party service integrations",
-		},
-		security: {
-			filename: "05-Security.md",
-			title: "Security",
-			description:
-				"Security features, Authentication & authorization, Data protection, API security, Third-party service security.Data security and encryption methods, Authentication & authorization strategies, Measures against security vulnerabilities",
-		},
-		codeStandards: {
-			filename: "06-Code-Standards-Best-Practices.md",
-			title: "Code Standards & Best Practices",
-			description:
-				"Code standards, Best practices, Error handling, Logging, Testing, Documentation, Code readability, Maintainability, Performance optimizations.Coding conventions (SOLID, DRY, KISS, etc.), Logging & error handling strategies, Testing strategies (Unit, Integration, E2E)",
-		},
-		deployment: {
-			filename: "07-Deployment-DevOps-Process.md",
-			title: "Deployment & DevOps Process",
-			description:
-				"Deployment process, CI/CD pipeline, Monitoring & logging, Performance optimization, Scaling strategies, Backup & recovery. CI/CD pipelines and automation, Server configurations and hosting options, Backup and monitoring strategies",
-		},
-		userGuide: {
-			filename: "08-User-Guide.md",
-			title: "User Guide",
-			description:
-				"User-friendly documentation, Guides for different user roles (developers, administrators, end-users), Tutorials, FAQs, Troubleshooting tips.Installation & setup instructions, User roles and permissions, Example usage scenarios",
-		},
-		futureDevelopment: {
-			filename: "09-Future-Development-Roadmap.md",
-			title: "Future Development & Roadmap",
-			description: "Future development plans, Roadmap, Feature requests, Contribution guidelines, Release notes.Planned features and enhancements, Scalability and performance goals, Long-term vision",
-		},
+		// dataModel: {
+		// 	filename: "03-Data-Model.md",
+		// 	title: "Data Model & Structure",
+		// 	description: "Database schema, Key tables and relationships, Caching & indexing strategies",
+		// },
+		// apiIntegrations: {
+		// 	filename: "04-API-Design-Integrations.md",
+		// 	title: "API Design & Integrations",
+		// 	description:
+		// 		"API design principles, RESTful API endpoints, API documentation, Integration strategies.REST/gRPC/WebSocket endpoints with descriptions, Authentication & authorization (JWT, OAuth, API Key, etc.), Third-party service integrations",
+		// },
+		// security: {
+		// 	filename: "05-Security.md",
+		// 	title: "Security",
+		// 	description:
+		// 		"Security features, Authentication & authorization, Data protection, API security, Third-party service security.Data security and encryption methods, Authentication & authorization strategies, Measures against security vulnerabilities",
+		// },
+		// codeStandards: {
+		// 	filename: "06-Code-Standards-Best-Practices.md",
+		// 	title: "Code Standards & Best Practices",
+		// 	description:
+		// 		"Code standards, Best practices, Error handling, Logging, Testing, Documentation, Code readability, Maintainability, Performance optimizations.Coding conventions (SOLID, DRY, KISS, etc.), Logging & error handling strategies, Testing strategies (Unit, Integration, E2E)",
+		// },
+		// deployment: {
+		// 	filename: "07-Deployment-DevOps-Process.md",
+		// 	title: "Deployment & DevOps Process",
+		// 	description:
+		// 		"Deployment process, CI/CD pipeline, Monitoring & logging, Performance optimization, Scaling strategies, Backup & recovery. CI/CD pipelines and automation, Server configurations and hosting options, Backup and monitoring strategies",
+		// },
+		// userGuide: {
+		// 	filename: "08-User-Guide.md",
+		// 	title: "User Guide",
+		// 	description:
+		// 		"User-friendly documentation, Guides for different user roles (developers, administrators, end-users), Tutorials, FAQs, Troubleshooting tips.Installation & setup instructions, User roles and permissions, Example usage scenarios",
+		// },
+		// futureDevelopment: {
+		// 	filename: "09-Future-Development-Roadmap.md",
+		// 	title: "Future Development & Roadmap",
+		// 	description: "Future development plans, Roadmap, Feature requests, Contribution guidelines, Release notes.Planned features and enhancements, Scalability and performance goals, Long-term vision",
+		// },
 	},
 };
 
@@ -156,7 +155,6 @@ OLLAMA_API_URL=http://localhost:11434
 # AWS_ACCESS_KEY_ID=AKIA...
 # AWS_SECRET_ACCESS_KEY=xxx
 # AWS_REGION=us-east-1
-# BEDROCK_API_URL=https://bedrock-runtime.{region}.amazonaws.com/v1
 
 # OpenWebUI Configuration (if PROVIDER=openwebui)
 # OPENWEBUI_API_URL=http://localhost:5000

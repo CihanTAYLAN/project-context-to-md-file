@@ -1698,15 +1698,63 @@ class BedrockProvider extends LLMProvider {
 	private accessKeyId: string;
 	private secretAccessKey: string;
 	private region: string;
-	private apiUrl: string;
 
-	constructor(model: string, accessKeyId: string, secretAccessKey: string, region: string, apiUrl: string, temperature: number) {
+	constructor(model: string, accessKeyId: string, secretAccessKey: string, region: string, temperature: number) {
 		super(temperature);
 		this.model = model;
 		this.accessKeyId = accessKeyId;
 		this.secretAccessKey = secretAccessKey;
 		this.region = region;
-		this.apiUrl = apiUrl;
+	}
+
+	private getBedrockApiUrl(): string {
+		return `https://bedrock-runtime.${this.region}.amazonaws.com/model/${this.model}/invoke`;
+	}
+
+	private async signRequest(method: string, url: string, body: string): Promise<Record<string, string>> {
+		const crypto = require("crypto");
+		const urlObj = new URL(url);
+		const timestamp = new Date().toISOString().replace(/[:-]|\.\d{3}/g, "");
+		const datestamp = timestamp.slice(0, 8);
+
+		// Task 1: Create canonical request
+		const canonicalUri = urlObj.pathname;
+		const payloadHash = crypto.createHash("sha256").update(body).digest("hex");
+		const canonicalHeaders = [`host:${urlObj.host}`, `x-amz-content-sha256:${payloadHash}`, `x-amz-date:${timestamp}`].join("\n") + "\n";
+		const signedHeaders = "host;x-amz-content-sha256;x-amz-date";
+		const canonicalRequest = [
+			method,
+			canonicalUri,
+			"", // empty query string
+			canonicalHeaders,
+			signedHeaders,
+			payloadHash,
+		].join("\n");
+
+		// Task 2: Create string to sign
+		const algorithm = "AWS4-HMAC-SHA256";
+		const credentialScope = [datestamp, this.region, "bedrock", "aws4_request"].join("/");
+		const stringToSign = [algorithm, timestamp, credentialScope, crypto.createHash("sha256").update(canonicalRequest).digest("hex")].join("\n");
+
+		// Task 3: Calculate signature
+		const kDate = crypto
+			.createHmac("sha256", "AWS4" + this.secretAccessKey)
+			.update(datestamp)
+			.digest();
+		const kRegion = crypto.createHmac("sha256", kDate).update(this.region).digest();
+		const kService = crypto.createHmac("sha256", kRegion).update("bedrock").digest();
+		const kSigning = crypto.createHmac("sha256", kService).update("aws4_request").digest();
+		const signature = crypto.createHmac("sha256", kSigning).update(stringToSign).digest("hex");
+
+		// Task 4: Create authorization header
+		const credential = `${this.accessKeyId}/${credentialScope}`;
+		const authorizationHeader = `${algorithm} Credential=${credential}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+		return {
+			Authorization: authorizationHeader,
+			"X-Amz-Date": timestamp,
+			"X-Amz-Content-Sha256": payloadHash,
+		};
 	}
 
 	async generateContent(context: string, sectionKey?: string): Promise<string> {
@@ -1714,26 +1762,33 @@ class BedrockProvider extends LLMProvider {
 			console.log(chalk.blue(`Generating content for ${sectionKey || "document"} with Bedrock using model ${this.model}...`));
 
 			const fullPrompt = this.buildFullPrompt(context, sectionKey);
+			const url = this.getBedrockApiUrl();
+			const body = JSON.stringify({
+				anthropic_version: "bedrock-2023-05-31",
+				max_tokens: 4000,
+				messages: [
+					{
+						role: "user",
+						content: fullPrompt,
+					},
+				],
+				temperature: this.temperature,
+			});
 
-			const response = await fetch(this.apiUrl, {
+			const headers = await this.signRequest("POST", url, body);
+
+			const response = await fetch(url, {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
-					"X-Amz-Content-Sha256": "UNSIGNED-PAYLOAD",
-					"X-Amz-Date": new Date().toISOString().replace(/[:-]|\.\d{3}/g, ""),
-					Authorization: `AWS4-HMAC-SHA256 Credential=${this.accessKeyId}/${this.region}/bedrock/aws4_request`,
+					...headers,
 				},
-				body: JSON.stringify({
-					modelId: this.model,
-					input: {
-						prompt: fullPrompt,
-						temperature: this.temperature,
-					},
-				}),
+				body,
 			});
 
 			if (!response.ok) {
-				throw new Error(`Error from Bedrock API: ${response.statusText}`);
+				const errorText = await response.text();
+				throw new Error(`Error from Bedrock API: ${response.statusText} - ${errorText}`);
 			}
 
 			const data = await response.json();
@@ -1834,7 +1889,7 @@ export function createLLMProvider(): LLMProvider {
 				console.error(chalk.red("AWS credentials are required but not provided."));
 				process.exit(1);
 			}
-			return new BedrockProvider(CONFIG.llmModel, CONFIG.awsAccessKeyId, CONFIG.awsSecretAccessKey, CONFIG.awsRegion, CONFIG.bedrockApiUrl, temperature);
+			return new BedrockProvider(CONFIG.llmModel, CONFIG.awsAccessKeyId, CONFIG.awsSecretAccessKey, CONFIG.awsRegion, temperature);
 		case "openwebui":
 			if (!CONFIG.openwebuiApiKey) {
 				console.error(chalk.red("OpenWebUI API key is required but not provided."));
