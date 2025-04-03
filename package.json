@@ -1,6 +1,6 @@
 {
     "name": "project-context-to-md-file",
-    "version": "1.3.2",
+    "version": "1.3.3",
     "description": "A service that converts project context to markdown file",
     "main": "dist/index.js",
     "bin": {
